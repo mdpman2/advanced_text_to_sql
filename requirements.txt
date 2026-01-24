@@ -1,0 +1,18 @@
+# Core dependencies
+openai>=1.12.0
+
+# Optional: Anthropic Claude support
+# anthropic>=0.18.0
+
+# Database drivers
+# psycopg2-binary>=2.9.0  # PostgreSQL
+# google-cloud-bigquery>=3.0.0  # BigQuery
+# snowflake-connector-python>=3.0.0  # Snowflake
+
+# Utilities
+python-dotenv>=1.0.0
+
+# Development (optional)
+# pytest>=7.0.0
+# black>=23.0.0
+# mypy>=1.0.0
