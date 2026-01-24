@@ -514,7 +514,6 @@ agent = TextToSQLAgent(
 
 - [Spider 2.0 벤치마크](https://spider2-sql.github.io/)
 - [Azure OpenAI 문서](https://learn.microsoft.com/azure/ai-services/openai/)
-- [뉴스: 다큐브, Spider 2.0 Lite 부문 세계 1위](https://v.daum.net/v/20260120095218405)
 
 ## 📄 라이선스
 
