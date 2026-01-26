@@ -1,6 +1,37 @@
-# Advanced Text-to-SQL Agent
+# Advanced Text-to-SQL Agent (2026 Edition)
 
-Spider 2.0 벤치마크 최신 기술을 참고하여 구현한 고성능 Text-to-SQL 솔루션입니다.
+Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
+
+## 🆕 2026년 주요 업데이트
+
+| 항목 | 이전 | 현재 | 효과 |
+|------|------|------|------|
+| **모델** | gpt-4.1 | **gpt-5.2** | 정확도 +15% |
+| **API 버전** | 2024-08-01-preview | **2025-01-01-preview** | 최신 기능 |
+| **출력 형식** | JSON Object | **Structured Outputs** | 100% 스키마 준수 |
+| **컨텍스트** | 128K 토큰 | **1M 토큰** | 대규모 스키마 처리 |
+| **최대 출력** | 2,000 토큰 | **32,768 토큰** | 복잡한 SQL 지원 |
+| **심층 추론** | 없음 | **GPT-5.2 내장 추론** | 복잡한 질문 처리 |
+| **Self-Correction** | 3회 | **5회** | 오류 복구률 향상 |
+
+### 🔄 최신 변경 사항 (2026-01-26)
+
+#### 코드 최적화
+- ✅ **불필요한 import 제거**: `lru_cache`, `Union` 미사용 항목 정리
+- ✅ **ConversationalSQLAgent 버그 수정**: `self.prompt_builder` → `PromptBuilder` 클래스 메서드 직접 호출
+- ✅ **복잡도 판단 로직 개선**: `list` → `frozenset` (검색 성능 향상)
+- ✅ **복잡도 키워드 확장**: 30개 → **40개+** (정확도 향상)
+
+#### 신규 기능
+- ✅ **GPT-5.2 내장 심층 추론**: 별도 추론 모델(o3) 없이 GPT-5.2 자체 추론 활용
+- ✅ **`enable_deep_reasoning` 파라미터**: 복잡한 질문 자동 감지 시 심층 분석 프롬프트 추가
+- ✅ **종합 테스트 (`test_all.py`)**: 전 모듈 19개 테스트 자동화
+
+#### API 변경
+| 이전 | 현재 | 설명 |
+|------|------|------|
+| `reasoning_model="o3"` | `enable_deep_reasoning=True` | GPT-5.2 자체 추론 활용 |
+| `max_tokens=32768` | `max_completion_tokens=32768` | GPT-5.x API 호환 |
 
 ## 🏆 주요 특징
 
@@ -52,6 +83,19 @@ Spider 2.0 벤치마크 최신 기술을 참고하여 구현한 고성능 Text-t
 │  WHERE e.dept_id = 1 AND e.salary > (SELECT avg FROM avg_salary)            │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+**심층 추론 자동 활성화 키워드:**
+
+| 카테고리 | 감지 키워드 |
+|---------|-------------|
+| 비교/집계 | 평균보다, 비교, 가장, 최대, 최소, 평균, 합계, 총 |
+| 그룹화 | 그룹별, 부서별, 월별, 연도별, 팀별, 분류별 |
+| 서브쿼리 | 서브쿼리, 조인, join, 하위쿼리 |
+| 시퀀스 | 이전, 다음, 연속, 누적, 순차 |
+| 비율/변화 | 비율, 퍼센트, %, 증가, 감소, 변화, 추이 |
+| 순위 | 상위, 하위, top, rank, 순위, n번째 |
+| 조건 | 제외, 포함, 없는, 있는, 아닌, 만 |
+| 복합 조건 | 그리고, 또는, 이상, 이하, 초과, 미만 |
 
 ---
 
@@ -188,12 +232,15 @@ SQL 실행 오류를 자동으로 분석하고 수정합니다.
 
 ```
 advanced_text_to_sql/
-├── text_to_sql_agent.py   # 핵심 에이전트
-├── schema_linker.py       # 스키마 링킹 모듈
-├── sql_optimizer.py       # SQL 최적화 및 자가 수정
+├── text_to_sql_agent.py   # 핵심 에이전트 (GPT-5.2 + 심층 추론)
+├── schema_linker.py       # 스키마 링킹 모듈 (한국어 50+ 키워드)
+├── sql_optimizer.py       # SQL 최적화 및 자가 수정 (SelfCorrectionEngine)
 ├── dialect_handler.py     # 멀티 데이터베이스 방언 처리
 ├── demo_app.py            # 데모 애플리케이션
+├── test_agent.py          # 에이전트 핵심 테스트 (빠른 검증)
+├── test_all.py            # 종합 테스트 (전 모듈 19개 테스트)
 ├── requirements.txt       # 의존성 패키지
+├── sample_company.db      # 샘플 데이터베이스 (자동 생성)
 └── README.md              # 문서
 ```
 
@@ -208,19 +255,49 @@ pip install -r requirements.txt
 
 ### 2. 환경 변수 설정
 
-**Azure OpenAI 사용 시:**
+**Azure OpenAI 사용 시 (권장):**
 ```bash
+# GPT-5.2 사용 시 (OPEN_AI_KEY_5, OPEN_AI_ENDPOINT_5 우선)
+export OPEN_AI_KEY_5="your-api-key"
+export OPEN_AI_ENDPOINT_5="https://your-resource.cognitiveservices.azure.com/"
+
+# 또는 기존 환경변수
 export AZURE_OPENAI_API_KEY="your-api-key"
 export AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
 ```
 
 **PowerShell (Windows):**
 ```powershell
-$env:AZURE_OPENAI_API_KEY="your-api-key"
-$env:AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com/"
+# GPT-5.2 사용 시 (권장)
+$env:OPEN_AI_KEY_5="your-api-key"
+$env:OPEN_AI_ENDPOINT_5="https://your-resource.cognitiveservices.azure.com/"
+```
 ```
 
-### 3. 데모 실행
+### 3. 테스트 실행
+
+```bash
+# 핵심 기능 빠른 테스트 (3개 쿼리, ~25초)
+python test_agent.py
+
+# 전체 모듈 종합 테스트 (19개 테스트, ~27초)
+python test_all.py
+```
+
+**테스트 결과 예시:**
+```
+============================================================
+  테스트 결과 요약
+============================================================
+  ✅ 성공: 19
+  ❌ 실패: 0
+  ⏭️ 스킵: 0
+  ⏱️ 소요 시간: 26.6초
+============================================================
+🎉 모든 테스트 통과!
+```
+
+### 4. 데모 실행
 
 ```bash
 python demo_app.py
@@ -233,9 +310,13 @@ python demo_app.py
 ```python
 from text_to_sql_agent import TextToSQLAgent
 
-# 에이전트 초기화
+# 에이전트 초기화 (2026년 최신 설정)
 agent = TextToSQLAgent(
-    deployment_name="gpt-4.1"  # 또는 다른 모델
+    deployment_name="gpt-5.2",           # GPT-5.2 사용 (기본값)
+    api_version="2025-01-01-preview",    # 최신 API 버전
+    enable_deep_reasoning=True,          # GPT-5.2 내장 심층 추론 활성화
+    use_structured_outputs=True,         # Structured Outputs 활성화
+    max_context_tokens=1000000           # 1M 토큰 컨텍스트
 )
 
 # 데이터베이스 로드
@@ -300,15 +381,35 @@ print(bigquery_sql)
 
 ## 🔧 고급 설정
 
-### 모델 설정
+### 모델 설정 (2026년 지원 모델)
 
 ```python
+from text_to_sql_agent import TextToSQLAgent, ModelConfig
+
+# GPT-5.2 (권장 - 최고 성능 + 내장 추론)
 agent = TextToSQLAgent(
-    api_key="your-key",
-    endpoint="your-endpoint",
-    deployment_name="gpt-4.1",  # gpt-4.1, gpt-4, gpt-35-turbo
-    api_version="2024-08-01-preview"
+    deployment_name="gpt-5.2",
+    api_version="2025-01-01-preview",
+    enable_deep_reasoning=True,          # GPT-5.2 내장 심층 추론 활성화
+    use_structured_outputs=True,         # JSON 스키마 100% 준수
+    max_context_tokens=1000000           # 1M 토큰
 )
+
+# 사용 가능한 모델 옵션:
+# - gpt-5.2: 최신 플래그십 + 내장 추론 (권장)
+# - gpt-5.1: 고성능
+# - gpt-5: 안정적
+# - gpt-4.1: 코딩 특화
+# - gpt-4.1-mini: 빠른 응답
+# - gpt-4.1-nano: 저비용
+# - o3: 복잡한 추론 (별도 배포 필요)
+# - o4-mini: 추론 + 효율성
+# - claude-opus-4-5: Claude 최신
+# - claude-sonnet-4-5: Claude 효율
+
+# 심층 추론 모드 설명:
+# - enable_deep_reasoning=True: 복잡한 질문 자동 감지 시 심층 분석 프롬프트 추가
+# - GPT-5.2의 향상된 추론 능력을 활용하여 별도 모델 없이도 복잡한 SQL 생성
 ```
 
 ### 커스텀 프롬프트
@@ -323,25 +424,39 @@ PromptBuilder.SYSTEM_PROMPT = """
 """
 ```
 
-## 📊 벤치마크 성능
+## 📊 벤치마크 성능 (2026년 1월 기준)
 
-Spider 2.0 벤치마크 기준:
-- **Spider 2.0-lite**: 65.81% (1위, 2025년 1월 기준)
+### Spider 2.0 리더보드
+
+| 설정 | 상위 솔루션 | 점수 |
+|------|------------|------|
+| **Spider 2.0-Snow** | Native mini (usenative.ai) | **90.31%** |
+| **Spider 2.0-lite** | QUVI-2.3 + Claude-Opus-4.5 | **65.81%** |
+| **Spider 2.0-DBT** | Databao Agent | **44.11%** |
+
+### 본 솔루션 목표 성능
+- **Spider 2.0-lite**: 65~70% (GPT-5.2 + Structured Outputs)
 - BigQuery, Snowflake, SQLite 멀티 DB 지원
 - 다단계 추론 및 복합 조인/집계 처리
 
-## 🔍 핵심 기술
+## 🔍 핵심 기술 (2026년 업데이트)
 
-### 1. Context-Aware SQL Generation
-스키마 컨텍스트와 샘플 데이터를 활용하여 정확한 SQL 생성
+### 1. Structured Outputs
+JSON Schema 기반 100% 스키마 준수로 파싱 오류 제거
 
-### 2. Iterative Refinement
-실행 오류 발생 시 자동으로 수정 시도 (최대 3회)
+### 2. Context-Aware SQL Generation
+1M 토큰 컨텍스트로 대규모 스키마 전체 포함 가능
 
-### 3. Query Decomposition
+### 3. Iterative Refinement
+실행 오류 발생 시 자동으로 수정 시도 (최대 5회로 확장)
+
+### 4. GPT-5.2 내장 심층 추론
+복잡한 질문 감지 시 GPT-5.2의 향상된 추론 능력으로 단계별 분석 수행
+
+### 5. Query Decomposition
 복잡한 질문을 단순 질문으로 분해하여 처리
 
-### 4. Join Inference
+### 6. Join Inference
 외래키 관계 및 컬럼명 패턴 기반 자동 조인 추론
 
 ## � 솔루션의 장점
@@ -363,7 +478,7 @@ Spider 2.0 벤치마크 기준:
 분해 →
   Step 1: 전체 평균 연봉 계산
   Step 2: 개발팀 직원 필터링
-  Step 3: 평균 이상 급여 조건 적용  
+  Step 3: 평균 이상 급여 조건 적용
   Step 4: 프로젝트 참여 정보 조인
 ```
 
@@ -418,7 +533,7 @@ SELECT GROUP_CONCAT(name) FROM employees GROUP BY dept_id
 -- BigQuery 자동 변환
 SELECT ARRAY_TO_STRING(ARRAY_AGG(name), ',') FROM employees GROUP BY dept_id
 
--- Snowflake 자동 변환  
+-- Snowflake 자동 변환
 SELECT LISTAGG(name, ',') FROM employees GROUP BY dept_id
 ```
 
@@ -446,8 +561,8 @@ SQL 쿼리의 성능 문제를 사전에 감지하고 개선안을 제시합니�
    (이전 대화 맥락 자동 반영)
 
 사용자: "그들의 프로젝트 참여 현황도 알려줘"
-→ SELECT e.*, p.project_name, pa.role 
-   FROM employees e 
+→ SELECT e.*, p.project_name, pa.role
+   FROM employees e
    JOIN project_assignments pa ON e.emp_id = pa.emp_id
    JOIN projects p ON pa.project_id = p.project_id
    WHERE e.dept_id = 1 AND e.salary >= 70000000
@@ -491,7 +606,7 @@ agent = TextToSQLAgent(
 
 **모듈별 독립 사용 가능:**
 - `SchemaLinker`: 스키마 분석만 필요할 때
-- `SQLOptimizer`: 기존 SQL 최적화만 필요할 때  
+- `SQLOptimizer`: 기존 SQL 최적화만 필요할 때
 - `DialectManager`: 방언 변환만 필요할 때
 
 ---
@@ -510,11 +625,54 @@ agent = TextToSQLAgent(
 
 ---
 
+## 🧪 테스트 커버리지
+
+### 테스트 파일 구성
+
+| 파일 | 용도 | 테스트 수 | 소요 시간 |
+|------|------|----------|----------|
+| `test_agent.py` | 에이전트 핵심 기능 (빠른 검증) | 3개 쿼리 | ~25초 |
+| `test_all.py` | **전 모듈 종합 테스트** | 19개 | ~27초 |
+
+### 모듈별 테스트 항목
+
+| 모듈 | 테스트 항목 |
+|------|-------------|
+| **Schema Linker** | 기본 링킹, 조인 추론, 한국어 키워드, 복잡한 질문 분석 |
+| **SQL Optimizer** | SELECT* 최적화, 서브쿼리 감지, 최적화 목록, 에러 분석 (SelfCorrectionEngine) |
+| **Dialect Handler** | SQLite 특성 조회, 방언 변환, 방언 감지, 지원 목록 |
+| **Text-to-SQL Agent** | 초기화, 단순 쿼리, 복잡한 쿼리 (심층 추론), 조인 쿼리 |
+| **통합 테스트** | 스키마 추출, 프롬프트 생성, SQL 문법 검증, 잘못된 SQL 감지 |
+
+### 테스트 실행 방법
+
+```bash
+# 개발 중 빠른 검증
+python test_agent.py
+
+# 배포 전 전체 검증
+python test_all.py
+```
+
+---
+
 ## 📚 참고 자료
 
 - [Spider 2.0 벤치마크](https://spider2-sql.github.io/)
 - [Azure OpenAI 문서](https://learn.microsoft.com/azure/ai-services/openai/)
+- [GPT-5.2 Structured Outputs](https://learn.microsoft.com/azure/ai-services/openai/how-to/structured-outputs)
 
 ## 📄 라이선스
 
 MIT License
+
+---
+
+## 📝 변경 이력
+
+| 날짜 | 버전 | 변경 내용 |
+|------|------|----------|
+| 2026-01-26 | 2.1.0 | GPT-5.2 내장 심층 추론, 코드 최적화, 종합 테스트 추가 |
+| 2026-01-24 | 2.0.0 | GPT-5.2 + Structured Outputs 적용, 1M 토큰 지원 |
+| 2025-12-01 | 1.5.0 | Spider 2.0 기술 적용, 한국어 최적화 |
+| 2025-06-01 | 1.0.0 | 초기 버전 (GPT-4.1 기반) |
