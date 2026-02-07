@@ -1,8 +1,13 @@
 """
-SQL Optimizer & Self-Correction Module
+SQL Optimizer & Self-Correction Module (v2.2.1)
 
 SQL 쿼리 최적화 및 자가 수정 기능을 제공합니다.
-Spider 2.0 벤치마크에서 높은 점수를 얻기 위한 핵심 기술입니다.
+Spider 2.0 벤치마크 #1 TCDataAgent-SQL (93.97%) 기술 참조.
+
+기능:
+- SELECT * / IN 서브쿼리 / ORDER BY without LIMIT 감지
+- SelfCorrectionEngine: 테이블/컬럼 오타, 모호한 컬럼, GROUP BY 누락, 조인 오류 자동 수정
+- 최대 5회 재시도 (5-round self-correction)
 """
 
 from __future__ import annotations
@@ -80,6 +85,7 @@ class SQLOptimizer:
             self._optimize_distinct,
             self._optimize_like_pattern,
             self._suggest_cte_usage,
+            self._optimize_null_comparison,
         ]
 
     @staticmethod

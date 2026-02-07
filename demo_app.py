@@ -1,52 +1,49 @@
 """
-Advanced Text-to-SQL Demo Application
+Advanced Text-to-SQL Demo Application (v2.2.1)
 
-Spider 2.0 벤치마크 1위 기술 기반의 Text-to-SQL 데모 애플리케이션입니다.
+Spider 2.0 벤치마크 #1 TCDataAgent-SQL (93.97%) 참조 기술 기반의 Text-to-SQL 데모.
+GPT-5.2 / gpt-5.2-codex, API v1, 400K context window 지원. (2026-02 최신)
 
 실행 방법:
     python demo_app.py
 
-환경 변수 설정 필요:
-    - AZURE_OPENAI_API_KEY: Azure OpenAI API 키
-    - AZURE_OPENAI_ENDPOINT: Azure OpenAI 엔드포인트
-    
-또는 Anthropic Claude 사용:
-    - ANTHROPIC_API_KEY: Anthropic API 키
+환경 변수:
+    - AZURE_OPENAI_API_KEY / OPEN_AI_KEY_5: Azure OpenAI API 키
+    - AZURE_OPENAI_ENDPOINT / OPEN_AI_ENDPOINT_5: Azure OpenAI 엔드포인트
+
+최적화 (v2.2.1):
+    - 미사용 import 9개 제거, dispatch dict, _get_api_key/_print_query_result DRY
+    - run_sample_questions 리소스 누수 수정 (agent 루프 밖 1회 생성 + finally close)
 """
 
 import os
-import sys
-import json
-import sqlite3
-from typing import Optional
-from datetime import datetime
+from typing import Any
 
 # 로컬 모듈 임포트
 from text_to_sql_agent import (
-    TextToSQLAgent, 
+    TextToSQLAgent,
     ConversationalSQLAgent,
     create_sample_database,
     SchemaExtractor,
-    DatabaseType
 )
-from schema_linker import SchemaLinker, QueryDecomposer
-from sql_optimizer import SQLOptimizer, SelfCorrectionEngine, SQLCorrectionPipeline
-from dialect_handler import DialectManager, SQLDialect, MultiDatabaseQuery
+from schema_linker import SchemaLinker
+from sql_optimizer import SQLOptimizer
+from dialect_handler import SQLDialect, MultiDatabaseQuery
 
 
 # 상수
 _BANNER = """
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║   🏆 Advanced Text-to-SQL Agent                                 ║
+║   🏆 Advanced Text-to-SQL Agent (2026-02)                        ║
 ║   ─────────────────────────────────────────────────────────────  ║
-║   Based on Spider 2.0 Benchmark Latest Technology               ║
-║                                                                  ║
+║   Spider 2.0 #1 TCDataAgent-SQL (93.97%) 참조 기술 기반         ║
+║   GPT-5.2 / gpt-5.2-codex · API v1 · 400K Context              ║
 ║                                                                  ║
 ║   Features:                                                      ║
-║   • Multi-step Reasoning                                         ║
-║   • Schema Linking                                               ║
-║   • Self-Correction                                              ║
+║   • Multi-step Reasoning + Contextual Scaling                    ║
+║   • Schema Linking + Relational Knowledge Graph                  ║
+║   • Self-Correction (5-round)                                    ║
 ║   • Multi-Database Support (SQLite, BigQuery, Snowflake, etc.)  ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
@@ -65,16 +62,29 @@ _MENU = """
 =================================================="""
 
 _EXIT_COMMANDS = frozenset(['exit', '종료', 'quit', 'q'])
+_MAX_DISPLAY_ROWS = 10
 
 
-def print_banner() -> None:
-    """배너 출력"""
-    print(_BANNER)
+# ── 공통 유틸 ──────────────────────────────────────────────
+
+def _get_api_key() -> str | None:
+    """Azure OpenAI API 키 조회 (중복 호출 제거용)"""
+    return os.getenv("AZURE_OPENAI_API_KEY")
 
 
-def print_menu() -> None:
-    """메뉴 출력"""
-    print(_MENU)
+def _print_query_result(result: dict[str, Any], *, max_rows: int = _MAX_DISPLAY_ROWS) -> None:
+    """SQL 생성 결과를 출력하는 공통 헬퍼 (3곳에서 재사용)"""
+    print(f"\n🔍 생성된 SQL:\n   {result['sql']}")
+    print(f"\n💬 설명: {result['explanation']}")
+    if 'confidence' in result:
+        print(f"🎯 신뢰도: {result['confidence']:.1%}")
+    if 'results' in result and result['results']:
+        row_count = result['row_count']
+        print(f"\n📊 결과 ({row_count}행):")
+        for row in result['results'][:max_rows]:
+            print(f"   {row}")
+        if row_count > max_rows:
+            print(f"   ... 외 {row_count - max_rows}행")
 
 
 def demo_schema_info(db_path: str) -> None:
@@ -164,11 +174,11 @@ ORDER BY avg_salary DESC"""
         print(results[dialect])
 
 
-def run_sample_questions(db_path: str, use_api: bool = False):
+def run_sample_questions(db_path: str, use_api: bool = False) -> None:
     """샘플 질문 실행"""
     print("\n📚 샘플 질문 실행")
     print("=" * 50)
-    
+
     sample_questions = [
         "개발팀 직원들의 평균 연봉은 얼마인가요?",
         "부서별 직원 수를 보여주세요",
@@ -176,180 +186,155 @@ def run_sample_questions(db_path: str, use_api: bool = False):
         "2020년 이후 입사한 직원 중 연봉이 7000만원 이상인 사람",
         "가장 많은 예산을 가진 부서는?",
     ]
-    
+
     schema = SchemaExtractor.extract_sqlite_schema(db_path)
     linker = SchemaLinker(schema)
-    
-    for i, question in enumerate(sample_questions, 1):
-        print(f"\n질문 {i}: {question}")
-        
-        # 스키마 링킹 결과
-        linking_result = linker.link(question)
-        print(f"  📎 관련 테이블: {', '.join(linking_result.relevant_tables)}")
-        
-        if use_api:
-            # 실제 API 호출 (API 키 설정 시)
-            try:
-                agent = TextToSQLAgent()
-                agent.load_database(db_path)
-                result = agent.ask(question)
-                print(f"  🔍 생성된 SQL: {result['sql']}")
-                print(f"  💬 설명: {result['explanation']}")
-                if 'results' in result and result['results']:
-                    print(f"  📊 결과 ({result['row_count']}행):")
-                    for row in result['results'][:3]:
-                        print(f"     {row}")
-                agent.close()
-            except Exception as e:
-                print(f"  ⚠️ API 호출 오류: {e}")
-        else:
-            # API 없이 스키마 링킹만 표시
-            print(f"  💡 집중 스키마:")
-            focused_schema = linker.get_focused_schema(question)
-            for line in focused_schema.split('\n')[:10]:
-                print(f"     {line}")
+
+    # API 모드: 에이전트를 루프 바깥에서 1회만 생성 (리소스 누수 수정)
+    agent: TextToSQLAgent | None = None
+    if use_api:
+        try:
+            agent = TextToSQLAgent()
+            agent.load_database(db_path)
+        except Exception as e:
+            print(f"  ⚠️ 에이전트 초기화 오류: {e}")
+            agent = None
+
+    try:
+        for i, question in enumerate(sample_questions, 1):
+            print(f"\n질문 {i}: {question}")
+            linking_result = linker.link(question)
+            print(f"  📎 관련 테이블: {', '.join(linking_result.relevant_tables)}")
+
+            if agent:
+                try:
+                    _print_query_result(agent.ask(question), max_rows=3)
+                except Exception as e:
+                    print(f"  ⚠️ API 호출 오류: {e}")
+            else:
+                print("  💡 집중 스키마:")
+                for line in linker.get_focused_schema(question).split('\n')[:10]:
+                    print(f"     {line}")
+    finally:
+        if agent:
+            agent.close()
 
 
-def interactive_mode(db_path: str):
+def _read_question() -> str | None:
+    """사용자 질문 입력. exit 시 None 반환."""
+    question = input("\n🗣️ 질문: ").strip()
+    if question.lower() in _EXIT_COMMANDS:
+        return None
+    return question or ""
+
+
+def interactive_mode(db_path: str) -> None:
     """대화형 모드"""
     print("\n💬 대화형 모드")
     print("=" * 50)
     print("질문을 입력하세요. 'exit' 또는 '종료'로 나갑니다.")
     print("대화 히스토리가 유지됩니다.\n")
-    
+
     try:
-        api_key = os.getenv("AZURE_OPENAI_API_KEY")
-        if not api_key:
+        if not _get_api_key():
             print("⚠️ AZURE_OPENAI_API_KEY 환경 변수가 설정되지 않았습니다.")
             print("   스키마 링킹 데모만 실행합니다.\n")
-            
             schema = SchemaExtractor.extract_sqlite_schema(db_path)
             linker = SchemaLinker(schema)
-            
-            while True:
-                question = input("\n🗣️ 질문: ").strip()
-                if question.lower() in _EXIT_COMMANDS:
-                    break
+
+            while (question := _read_question()) is not None:
                 if not question:
                     continue
-                
-                print("\n📎 스키마 분석 결과:")
                 result = linker.link(question)
+                print("\n📎 스키마 분석 결과:")
                 print(f"   관련 테이블: {', '.join(result.relevant_tables)}")
                 print(f"   관련 컬럼: {dict(result.relevant_columns)}")
                 if result.inferred_joins:
                     print(f"   추론된 조인: {result.inferred_joins}")
-                
                 print("\n💡 집중 스키마:")
                 print(linker.get_focused_schema(question))
             return
-        
+
         # API 키가 있으면 실제 에이전트 사용
         agent = ConversationalSQLAgent()
         agent.load_database(db_path)
-        
-        while True:
-            question = input("\n🗣️ 질문: ").strip()
-            if question.lower() in _EXIT_COMMANDS:
-                break
-            if not question:
-                continue
-            
-            try:
-                result = agent.ask_with_history(question)
-                print(f"\n🔍 SQL:\n{result['sql']}")
-                print(f"\n💬 설명: {result['explanation']}")
-                
-                if 'results' in result:
-                    print(f"\n📊 결과 ({result['row_count']}행):")
-                    for row in result['results'][:10]:
-                        print(f"   {row}")
-                    if result['row_count'] > 10:
-                        print(f"   ... 외 {result['row_count'] - 10}행")
-                        
-            except Exception as e:
-                print(f"\n❌ 오류: {e}")
-        
-        agent.close()
-        
+        try:
+            while (question := _read_question()) is not None:
+                if not question:
+                    continue
+                try:
+                    _print_query_result(agent.ask_with_history(question))
+                except Exception as e:
+                    print(f"\n❌ 오류: {e}")
+        finally:
+            agent.close()
+
     except KeyboardInterrupt:
         print("\n\n프로그램을 종료합니다.")
 
 
-def single_question_mode(db_path: str):
+def single_question_mode(db_path: str) -> None:
     """단일 질문 모드"""
     print("\n🎯 자연어 질문 입력")
     print("=" * 50)
-    
+
     question = input("질문을 입력하세요: ").strip()
     if not question:
         print("질문이 입력되지 않았습니다.")
         return
-    
+
     schema = SchemaExtractor.extract_sqlite_schema(db_path)
     linker = SchemaLinker(schema)
-    
-    print(f"\n📎 스키마 분석...")
-    result = linker.link(question)
-    print(f"   관련 테이블: {', '.join(result.relevant_tables)}")
-    
-    # API 키 확인
-    api_key = os.getenv("AZURE_OPENAI_API_KEY")
-    if api_key:
-        try:
-            print("\n🤖 SQL 생성 중...")
-            agent = TextToSQLAgent()
-            agent.load_database(db_path)
-            result = agent.ask(question)
-            
-            print(f"\n🔍 생성된 SQL:")
-            print(f"   {result['sql']}")
-            print(f"\n💬 설명: {result['explanation']}")
-            print(f"🎯 신뢰도: {result['confidence']:.1%}")
-            
-            if 'results' in result:
-                print(f"\n📊 실행 결과 ({result['row_count']}행):")
-                for row in result['results'][:10]:
-                    print(f"   {row}")
-            
-            agent.close()
-        except Exception as e:
-            print(f"\n❌ 오류: {e}")
-    else:
+
+    print("\n📎 스키마 분석...")
+    linking = linker.link(question)
+    print(f"   관련 테이블: {', '.join(linking.relevant_tables)}")
+
+    if not _get_api_key():
         print("\n⚠️ AZURE_OPENAI_API_KEY가 설정되지 않아 SQL 생성을 건너뜁니다.")
         print("💡 집중 스키마:")
         print(linker.get_focused_schema(question))
+        return
+
+    try:
+        print("\n🤖 SQL 생성 중...")
+        agent = TextToSQLAgent()
+        agent.load_database(db_path)
+        try:
+            _print_query_result(agent.ask(question))
+        finally:
+            agent.close()
+    except Exception as e:
+        print(f"\n❌ 오류: {e}")
 
 
-def main():
+def main() -> None:
     """메인 함수"""
-    print_banner()
-    
-    # 샘플 데이터베이스 생성
+    print(_BANNER)
+
     print("📦 샘플 데이터베이스 준비 중...")
     db_path = create_sample_database()
     print(f"   ✅ 데이터베이스 생성 완료: {db_path}")
-    
+
+    # dispatch dict — if/elif 7단 분기 → O(1) 룩업
+    dispatch: dict[str, callable] = {
+        "1": lambda: single_question_mode(db_path),
+        "2": lambda: demo_schema_info(db_path),
+        "3": demo_sql_optimization,
+        "4": demo_dialect_conversion,
+        "5": lambda: interactive_mode(db_path),
+        "6": lambda: run_sample_questions(db_path, use_api=_get_api_key() is not None),
+    }
+
     while True:
-        print_menu()
+        print(_MENU)
         choice = input("\n선택: ").strip()
-        
-        if choice == "1":
-            single_question_mode(db_path)
-        elif choice == "2":
-            demo_schema_info(db_path)
-        elif choice == "3":
-            demo_sql_optimization()
-        elif choice == "4":
-            demo_dialect_conversion()
-        elif choice == "5":
-            interactive_mode(db_path)
-        elif choice == "6":
-            use_api = os.getenv("AZURE_OPENAI_API_KEY") is not None
-            run_sample_questions(db_path, use_api=use_api)
-        elif choice == "0":
+        if choice == "0":
             print("\n👋 프로그램을 종료합니다.")
             break
+        handler = dispatch.get(choice)
+        if handler:
+            handler()
         else:
             print("\n⚠️ 잘못된 선택입니다. 다시 선택해주세요.")
 

@@ -1,5 +1,5 @@
-# Core dependencies (2026년 최신 버전)
-openai>=1.65.0  # GPT-5.2, Structured Outputs, 1M context 지원
+# Core dependencies (2026-02 최신 버전)
+openai>=1.65.0  # GPT-5.2, GPT-5.2-codex, Responses API (v1), Structured Outputs, 400K context
 
 # Optional: Anthropic Claude support
 # anthropic>=0.45.0  # Claude Opus 4.5, Sonnet 4.5 지원

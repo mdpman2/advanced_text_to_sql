@@ -1,16 +1,19 @@
 """
-Advanced Text-to-SQL Agent
-Spider 2.0 벤치마크 최신 기술 기반
+Advanced Text-to-SQL Agent (v2.2.1)
+Spider 2.0 벤치마크 #1 TCDataAgent-SQL (93.97%) 참조 기술 기반
 
 핵심 기술:
 1. 스키마 이해 및 메타데이터 관리
 2. 다단계 추론 (Multi-step Reasoning)
 3. 멀티 데이터베이스 지원 (BigQuery, Snowflake, SQLite, PostgreSQL)
-4. Self-correction 및 검증 메커니즘
-5. Context-aware SQL 생성
+4. Self-correction 및 검증 메커니즘 (5-round)
+5. Context-aware SQL 생성 (400K 토큰)
+
+지원 모델: GPT-5.2, gpt-5.2-codex (SQL 특화), o3-pro 등 17종
+API: v1 (GA) — Responses API + Structured Outputs
 
 Author: Azure OpenAI Sample
-Date: 2026-01-24
+Date: 2026-02-08
 """
 
 from __future__ import annotations
@@ -289,15 +292,29 @@ class SQLValidator:
 
 
 class ModelConfig(Enum):
-    """사용 가능한 모델 설정"""
-    GPT_5_2 = "gpt-5.2"           # 최신 플래그십 모델 (권장)
-    GPT_5_1 = "gpt-5.1"           # 고성능 모델
-    GPT_5 = "gpt-5"               # 안정적인 모델
-    GPT_4_1 = "gpt-4.1"           # 코딩 특화
-    GPT_4_1_MINI = "gpt-4.1-mini" # 빠른 응답
-    GPT_4_1_NANO = "gpt-4.1-nano" # 저비용
-    O3 = "o3"                     # 복잡한 추론
-    O4_MINI = "o4-mini"           # 추론 + 효율성
+    """사용 가능한 모델 설정 (2026-02 최신)"""
+    # GPT-5.2 계열 (최신)
+    GPT_5_2 = "gpt-5.2"               # 최신 플래그십 (권장, 400K context)
+    GPT_5_2_CODEX = "gpt-5.2-codex"   # 코드/SQL 특화 (2026-01-14, Codex CLI 최적화)
+    # GPT-5.1 계열
+    GPT_5_1 = "gpt-5.1"               # 고성능 모델
+    GPT_5_1_CODEX = "gpt-5.1-codex"   # 코드 특화
+    GPT_5_1_CODEX_MAX = "gpt-5.1-codex-max"  # 코드 특화 (최대 성능)
+    # GPT-5 계열
+    GPT_5 = "gpt-5"                   # 안정적인 모델
+    GPT_5_PRO = "gpt-5-pro"           # Pro 추론 강화
+    GPT_5_CODEX = "gpt-5-codex"       # 코드 특화
+    GPT_5_MINI = "gpt-5-mini"         # 경량 모델
+    GPT_5_NANO = "gpt-5-nano"         # 최저비용
+    # GPT-4.1 계열
+    GPT_4_1 = "gpt-4.1"               # 코딩 특화
+    GPT_4_1_MINI = "gpt-4.1-mini"     # 빠른 응답
+    GPT_4_1_NANO = "gpt-4.1-nano"     # 저비용
+    # 추론 모델
+    O3 = "o3"                         # 복잡한 추론
+    O3_PRO = "o3-pro"                 # 최고 추론 품질
+    O4_MINI = "o4-mini"               # 추론 + 효율성
+    # Claude 계열 (Azure AI Foundry)
     CLAUDE_OPUS_4_5 = "claude-opus-4-5"     # Claude 최신
     CLAUDE_SONNET_4_5 = "claude-sonnet-4-5" # Claude 효율
 
@@ -344,24 +361,30 @@ SQL_GENERATION_SCHEMA = {
 
 class TextToSQLAgent:
     """
-    Text-to-SQL 에이전트 (2026년 최신 기술 적용)
+    Text-to-SQL 에이전트 (2026-02 최신 기술 적용)
+
+    Spider 2.0 벤치마크 최신 기술 기반:
+    - TCDataAgent-SQL Contextual Scaling Engine 참조 (#1, 93.97%)
+    - Relational Knowledge Graph 기반 스키마 링킹 (#4, 86.28%)
 
     주요 기능:
     - 다단계 추론 (Multi-step Reasoning) - GPT-5.2 내장 추론 활용
     - Self-correction 및 검증 메커니즘
     - Structured Outputs (100% 스키마 준수)
-    - 1M 토큰 컨텍스트 지원
+    - 400K 토큰 컨텍스트 (272K input + 128K output)
+    - gpt-5.2-codex: SQL/코드 특화 모델 지원
+    - Responses API (v1) 호환
     - 복잡한 질문에 대한 심층 추론 (GPT-5.2 native reasoning)
     """
 
     # 컴파일된 정규식 패턴 (성능 최적화)
     _JSON_PATTERN = re.compile(r'\{[\s\S]*\}')
 
-    # 지원 API 버전
+    # 지원 API 버전 (2026-02 최신)
     SUPPORTED_API_VERSIONS = [
-        "2025-01-01-preview",  # 최신
-        "2024-10-21",          # GA 안정
-        "2024-08-01-preview",  # 레거시
+        "v1",                          # 최신 GA (Responses API + Structured Outputs)
+        "2025-01-01-preview",          # 이전 프리뷰
+        "2024-10-21",                  # 레거시 GA
     ]
 
     def __init__(
@@ -369,9 +392,9 @@ class TextToSQLAgent:
         api_key: Optional[str] = None,
         endpoint: Optional[str] = None,
         deployment_name: str = "gpt-5.2",
-        api_version: str = "2025-01-01-preview",
+        api_version: str = "v1",
         use_structured_outputs: bool = True,
-        max_context_tokens: int = 1000000,
+        max_context_tokens: int = 400000,
         use_claude: bool = False,
         enable_deep_reasoning: bool = True
     ):
@@ -379,10 +402,10 @@ class TextToSQLAgent:
         Args:
             api_key: Azure OpenAI API 키 (기본: OPEN_AI_KEY_5 환경변수)
             endpoint: Azure OpenAI 엔드포인트 (기본: OPEN_AI_ENDPOINT_5 환경변수)
-            deployment_name: 모델 배포 이름 (기본: gpt-5.2)
-            api_version: API 버전 (기본: 2025-01-01-preview)
+            deployment_name: 모델 배포 이름 (기본: gpt-5.2, SQL 특화: gpt-5.2-codex)
+            api_version: API 버전 (기본: v1 — Responses API + Structured Outputs)
             use_structured_outputs: Structured Outputs 사용 여부 (기본: True)
-            max_context_tokens: 최대 컨텍스트 토큰 수 (기본: 1M)
+            max_context_tokens: 최대 컨텍스트 토큰 수 (기본: 400K — 272K input + 128K output)
             use_claude: Claude 사용 여부
             enable_deep_reasoning: 복잡한 질문에 GPT-5.2 심층 추론 활성화 (기본: True)
         """
@@ -463,31 +486,21 @@ class TextToSQLAgent:
         else:
             response_format = {"type": "json_object"}
 
-        # GPT-5.x 모델은 max_completion_tokens 사용, 기존 모델은 max_tokens 사용
-        is_gpt5_model = model.startswith(('gpt-5', 'o3', 'o4'))
+        # 공통 파라미터 구성 후, 모델별 토큰 키만 다르게 적용
+        params: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.1,
+            "response_format": response_format,
+        }
+        # GPT-5.x / o3 / o4 모델은 max_completion_tokens, 기타는 max_tokens
+        token_key = "max_completion_tokens" if model.startswith(('gpt-5', 'o3', 'o4')) else "max_tokens"
+        params[token_key] = 32768
 
-        if is_gpt5_model:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,
-                max_completion_tokens=32768,  # GPT-5.x, o3, o4 모델용
-                response_format=response_format
-            )
-        else:
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.1,
-                max_tokens=32768,  # GPT-4.x 모델용
-                response_format=response_format
-            )
+        response = self.client.chat.completions.create(**params)
         return response.choices[0].message.content or ""
 
     # 복잡한 질문 판단용 키워드 (클래스 레벨 상수)
@@ -828,13 +841,13 @@ if __name__ == "__main__":
     # 에이전트 초기화 (환경 변수에서 API 키 로드)
     # 실제 사용 시 아래 주석 해제
     """
-    # GPT-5.2 + 심층 추론 모드 (2026년 권장 설정)
+    # GPT-5.2 + 심층 추론 모드 (2026-02 권장 설정)
     agent = TextToSQLAgent(
-        deployment_name="gpt-5.2",              # GPT-5.2 사용
-        api_version="2025-01-01-preview",       # 최신 API
+        deployment_name="gpt-5.2",              # GPT-5.2 사용 (SQL 특화: gpt-5.2-codex)
+        api_version="v1",                       # 최신 GA API (Responses API 지원)
         use_structured_outputs=True,            # JSON 스키마 100% 준수
         enable_deep_reasoning=True,             # GPT-5.2 심층 추론 활성화
-        max_context_tokens=1000000              # 1M 토큰 컨텍스트
+        max_context_tokens=400000               # 400K 컨텍스트 (272K input + 128K output)
     )
 
     # 데이터베이스 로드

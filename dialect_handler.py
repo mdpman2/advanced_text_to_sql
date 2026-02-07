@@ -1,8 +1,13 @@
 """
-Multi-Database SQL Dialect Handler
+Multi-Database SQL Dialect Handler (v2.2.1)
 
 BigQuery, Snowflake, PostgreSQL, SQLite 등 다양한 SQL 방언을 지원합니다.
-Spider 2.0 Lite 부문에서는 멀티 데이터베이스 환경 처리가 핵심입니다.
+Spider 2.0-Snow/Lite 벤치마크의 멀티 데이터베이스 환경 처리가 핵심입니다.
+
+지원 변환:
+- SQLite ↔ BigQuery (GROUP_CONCAT ↔ ARRAY_AGG, strftime ↔ FORMAT_DATE)
+- SQLite ↔ Snowflake (GROUP_CONCAT ↔ LISTAGG, FLATTEN)
+- SQLite ↔ PostgreSQL (GROUP_CONCAT ↔ STRING_AGG, :: 타입캐스팅)
 """
 
 from __future__ import annotations

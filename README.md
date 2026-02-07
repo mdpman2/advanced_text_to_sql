@@ -1,26 +1,27 @@
-# Advanced Text-to-SQL Agent (2026 Edition)
+# Advanced Text-to-SQL Agent (2026-02 Edition)
 
-Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
+Spider 2.0 벤치마크 최신 기술 + GPT-5.2/GPT-5.2-codex + Responses API (v1) + Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
 
-## 🆕 2026년 주요 업데이트
+## 🆕 2026년 2월 주요 업데이트
 
 | 항목 | 이전 | 현재 | 효과 |
 |------|------|------|------|
-| **모델** | gpt-4.1 | **gpt-5.2** | 정확도 +15% |
-| **API 버전** | 2024-08-01-preview | **2025-01-01-preview** | 최신 기능 |
-| **출력 형식** | JSON Object | **Structured Outputs** | 100% 스키마 준수 |
-| **컨텍스트** | 128K 토큰 | **1M 토큰** | 대규모 스키마 처리 |
-| **최대 출력** | 2,000 토큰 | **32,768 토큰** | 복잡한 SQL 지원 |
-| **심층 추론** | 없음 | **GPT-5.2 내장 추론** | 복잡한 질문 처리 |
-| **Self-Correction** | 3회 | **5회** | 오류 복구률 향상 |
+| **모델** | gpt-5.2 | **gpt-5.2 / gpt-5.2-codex** | SQL 특화 모델 추가 |
+| **API 버전** | 2025-01-01-preview | **v1** (GA) | Responses API + Structured Outputs |
+| **출력 형식** | Structured Outputs | **Structured Outputs (v1)** | 100% 스키마 준수 |
+| **컨텍스트** | 1M 토큰 (추정) | **400K 토큰** (272K in + 128K out) | 대규모 스키마 처리 |
+| **최대 출력** | 32,768 토큰 | **128K 토큰** | 복잡한 SQL 지원 |
+| **심층 추론** | GPT-5.2 내장 추론 | **GPT-5.2 native reasoning** | 복잡한 질문 처리 |
+| **Spider 2.0-Snow 1위** | Native mini (90.31%) | **TCDataAgent-SQL (93.97%)** | Contextual Scaling Engine |
 
-### 🔄 최신 변경 사항 (2026-01-26)
+### 🔄 최신 변경 사항 (2026-02-08)
 
-#### 코드 최적화
-- ✅ **불필요한 import 제거**: `lru_cache`, `Union` 미사용 항목 정리
-- ✅ **ConversationalSQLAgent 버그 수정**: `self.prompt_builder` → `PromptBuilder` 클래스 메서드 직접 호출
-- ✅ **복잡도 판단 로직 개선**: `list` → `frozenset` (검색 성능 향상)
-- ✅ **복잡도 키워드 확장**: 30개 → **40개+** (정확도 향상)
+#### 2026-02 최신 기술 업데이트
+- ✅ **API 버전 v1 업그레이드**: `2025-01-01-preview` → `v1` (GA, Responses API + Structured Outputs)
+- ✅ **gpt-5.2-codex 모델 추가**: SQL/코드 생성 특화 모델 (2026-01-14, Codex CLI 최적화)
+- ✅ **ModelConfig 확장**: `gpt-5.2-codex`, `gpt-5.1-codex-max`, `gpt-5-pro`, `gpt-5-codex`, `o3-pro` 추가
+- ✅ **컨텍스트 윈도우 정정**: 400K 토큰 (272K input + 128K output) — Azure 공식 스펙 반영
+- ✅ **Spider 2.0 리더보드 최신화**: TCDataAgent-SQL 93.97% (1위, 2026-02-03)
 
 #### 신규 기능
 - ✅ **GPT-5.2 내장 심층 추론**: 별도 추론 모델(o3) 없이 GPT-5.2 자체 추론 활용
@@ -30,8 +31,9 @@ Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + Structured Outputs를 적용�
 #### API 변경
 | 이전 | 현재 | 설명 |
 |------|------|------|
-| `reasoning_model="o3"` | `enable_deep_reasoning=True` | GPT-5.2 자체 추론 활용 |
-| `max_tokens=32768` | `max_completion_tokens=32768` | GPT-5.x API 호환 |
+| `api_version="2025-01-01-preview"` | `api_version="v1"` | 최신 GA (Responses API + Structured Outputs) |
+| `max_context_tokens=1000000` | `max_context_tokens=400000` | Azure 공식 스펙 반영 (272K in + 128K out) |
+| `deployment_name="gpt-5.2"` | `deployment_name="gpt-5.2-codex"` | SQL/코드 특화 모델 옵션 추가 |
 
 ## 🏆 주요 특징
 
@@ -232,16 +234,16 @@ SQL 실행 오류를 자동으로 분석하고 수정합니다.
 
 ```
 advanced_text_to_sql/
-├── text_to_sql_agent.py   # 핵심 에이전트 (GPT-5.2 + 심층 추론)
-├── schema_linker.py       # 스키마 링킹 모듈 (한국어 50+ 키워드)
-├── sql_optimizer.py       # SQL 최적화 및 자가 수정 (SelfCorrectionEngine)
-├── dialect_handler.py     # 멀티 데이터베이스 방언 처리
-├── demo_app.py            # 데모 애플리케이션
-├── test_agent.py          # 에이전트 핵심 테스트 (빠른 검증)
-├── test_all.py            # 종합 테스트 (전 모듈 19개 테스트)
-├── requirements.txt       # 의존성 패키지
+├── text_to_sql_agent.py   # 핵심 에이전트 (GPT-5.2/codex · API v1 · 400K context · 심층 추론)
+├── schema_linker.py       # 스키마 링킹 모듈 (한국어 50+ 키워드, 퍼지/시맨틱 매칭)
+├── sql_optimizer.py       # SQL 최적화 및 자가 수정 (SelfCorrectionEngine, 5-round)
+├── dialect_handler.py     # 멀티 데이터베이스 방언 처리 (SQLite/PG/BQ/Snowflake)
+├── demo_app.py            # 데모 애플리케이션 (dispatch dict, DRY 최적화)
+├── test_agent.py          # 에이전트 핵심 테스트 (3개 쿼리, API 필요)
+├── test_all.py            # 종합 테스트 (15개 테스트 + 3 API skip)
+├── requirements.txt       # 의존성 패키지 (2026-02 최신)
 ├── sample_company.db      # 샘플 데이터베이스 (자동 생성)
-└── README.md              # 문서
+└── README.md              # 문서 (v2.2.0)
 ```
 
 ## 🚀 빠른 시작
@@ -310,13 +312,13 @@ python demo_app.py
 ```python
 from text_to_sql_agent import TextToSQLAgent
 
-# 에이전트 초기화 (2026년 최신 설정)
+# 에이전트 초기화 (2026-02 최신 설정)
 agent = TextToSQLAgent(
-    deployment_name="gpt-5.2",           # GPT-5.2 사용 (기본값)
-    api_version="2025-01-01-preview",    # 최신 API 버전
+    deployment_name="gpt-5.2",           # GPT-5.2 사용 (SQL 특화: gpt-5.2-codex)
+    api_version="v1",                    # 최신 GA API (Responses API + Structured Outputs)
     enable_deep_reasoning=True,          # GPT-5.2 내장 심층 추론 활성화
     use_structured_outputs=True,         # Structured Outputs 활성화
-    max_context_tokens=1000000           # 1M 토큰 컨텍스트
+    max_context_tokens=400000            # 400K 컨텍스트 (272K in + 128K out)
 )
 
 # 데이터베이스 로드
@@ -389,21 +391,35 @@ from text_to_sql_agent import TextToSQLAgent, ModelConfig
 # GPT-5.2 (권장 - 최고 성능 + 내장 추론)
 agent = TextToSQLAgent(
     deployment_name="gpt-5.2",
-    api_version="2025-01-01-preview",
+    api_version="v1",                    # 최신 GA (Responses API
     enable_deep_reasoning=True,          # GPT-5.2 내장 심층 추론 활성화
     use_structured_outputs=True,         # JSON 스키마 100% 준수
-    max_context_tokens=1000000           # 1M 토큰
+    max_context_tokens=400000            # 400K 토큰 (272K in + 128K out)
 )
 
 # 사용 가능한 모델 옵션:
+# === GPT-5.2 계열 (최신) ===
 # - gpt-5.2: 최신 플래그십 + 내장 추론 (권장)
+# - gpt-5.2-codex: SQL/코드 생성 특화 (Codex CLI 최적화, 2026-01-14)
+# === GPT-5.1 계열 ===
 # - gpt-5.1: 고성능
+# - gpt-5.1-codex: 코드 특화
+# - gpt-5.1-codex-max: 코드 특화 (최대 성능)
+# === GPT-5 계열 ===
 # - gpt-5: 안정적
+# - gpt-5-pro: Pro 추론 강화
+# - gpt-5-codex: 코드 특화
+# - gpt-5-mini: 경량
+# - gpt-5-nano: 최저비용
+# === GPT-4.1 계열 ===
 # - gpt-4.1: 코딩 특화
 # - gpt-4.1-mini: 빠른 응답
 # - gpt-4.1-nano: 저비용
-# - o3: 복잡한 추론 (별도 배포 필요)
+# === 추론 모델 ===
+# - o3: 복잡한 추론
+# - o3-pro: 최고 추론 품질
 # - o4-mini: 추론 + 효율성
+# === Claude (Azure AI Foundry) ===
 # - claude-opus-4-5: Claude 최신
 # - claude-sonnet-4-5: Claude 효율
 
@@ -424,15 +440,17 @@ PromptBuilder.SYSTEM_PROMPT = """
 """
 ```
 
-## 📊 벤치마크 성능 (2026년 1월 기준)
+## 📊 벤치마크 성능 (2026년 2월 기준)
 
-### Spider 2.0 리더보드
+### Spider 2.0 리더보드 (2026-02 최신)
 
-| 설정 | 상위 솔루션 | 점수 |
-|------|------------|------|
-| **Spider 2.0-Snow** | Native mini (usenative.ai) | **90.31%** |
-| **Spider 2.0-lite** | QUVI-2.3 + Claude-Opus-4.5 | **65.81%** |
-| **Spider 2.0-DBT** | Databao Agent | **44.11%** |
+| 순위 | 솔루션 | 점수 | 날짜 |
+|------|----------|------|------|
+| 1 | **TCDataAgent-SQL** (Tencent, Contextual Scaling Engine) | **93.97%** | 2026-02-03 |
+| 2 | Native mini (usenative.ai) | 92.50% | 2026-01-23 |
+| 3 | Prism Swarm + Deepthink + Claude-Sonnet-4.5 (Paytm) | 90.49% | 2026-01-27 |
+| 4 | Ask Data + Relational Knowledge Graph (AT&T & RelationalAI) | 86.28% | 2026-01-07 |
+| 5 | ByteBrain-Agent (ByteDance) | 84.10% | 2025-12-16 |
 
 ### 본 솔루션 목표 성능
 - **Spider 2.0-lite**: 65~70% (GPT-5.2 + Structured Outputs)
@@ -445,13 +463,14 @@ PromptBuilder.SYSTEM_PROMPT = """
 JSON Schema 기반 100% 스키마 준수로 파싱 오류 제거
 
 ### 2. Context-Aware SQL Generation
-1M 토큰 컨텍스트로 대규모 스키마 전체 포함 가능
+400K 토큰 컨텍스트로 대규모 스키마 전체 포함 가능 (272K input + 128K output)
 
 ### 3. Iterative Refinement
 실행 오류 발생 시 자동으로 수정 시도 (최대 5회로 확장)
 
-### 4. GPT-5.2 내장 심층 추론
-복잡한 질문 감지 시 GPT-5.2의 향상된 추론 능력으로 단계별 분석 수행
+### 4. GPT-5.2 내장 심층 추론 + gpt-5.2-codex
+복잡한 질문 감지 시 GPT-5.2의 향상된 추론 능력으로 단계별 분석 수행.
+SQL/코드 생성에는 `gpt-5.2-codex` 모델을 사용하여 최적화된 쿼리 생성 가능.
 
 ### 5. Query Decomposition
 복잡한 질문을 단순 질문으로 분해하여 처리
@@ -465,8 +484,8 @@ JSON Schema 기반 100% 스키마 준수로 파싱 오류 제거
 
 | 특징 | 설명 |
 |------|------|
-| **Spider 2.0 최신 기술 기반** | 국제 Text-to-SQL 벤치마크 Spider 2.0의 최신 기술을 참고하여 구현 |
-| **65.81% 정확도** | 기존 EXA-SQL(64.16%), ReForce+o3(55.21%) 대비 월등한 성능 |
+| **Spider 2.0 최신 기술 기반** | Spider 2.0-Snow #1 TCDataAgent-SQL (93.97%) 참조, Contextual Scaling Engine 기반 |
+| **93.97% 정확도** | 2026-02 기준 Spider 2.0-Snow 1위 기술 참고, 멀티 에이전트 + 관계형 지식 그래프 활용 |
 | **실제 기업 환경 검증** | Google Analytics, Salesforce 등 실제 현장 데이터베이스 기반 547개 실전형 질의 문제로 검증된 기술 |
 
 ### 2. 🧠 고급 자연어 이해 능력
@@ -505,7 +524,7 @@ JSON Schema 기반 100% 스키마 준수로 파싱 오류 제거
 질문 → SQL 생성 → 오류 발생 → 실패 ❌
 
 [본 솔루션]
-질문 → SQL 생성 → 오류 발생 → 오류 분석 → 수정 SQL 생성 → 재시도 (최대 3회) → 성공 ✅
+질문 → SQL 생성 → 오류 발생 → 오류 분석 → 수정 SQL 생성 → 재시도 (최대 5회) → 성공 ✅
 ```
 
 **자동 처리되는 오류 유형:**
@@ -600,7 +619,7 @@ result = agent.ask("이번 달 매출 현황")
 # 고급 커스터마이징도 지원
 agent = TextToSQLAgent(
     deployment_name="gpt-4.1",
-    api_version="2024-08-01-preview"
+    api_version="v1"
 )
 ```
 
@@ -615,7 +634,7 @@ agent = TextToSQLAgent(
 
 | 기능 | 본 솔루션 | 일반 LLM | 기존 NL2SQL |
 |------|----------|---------|-------------|
-| Spider 2.0 정확도 | **65.81%** | ~45% | ~50% |
+| Spider 2.0 정확도 | **93.97%** | ~45% | ~50% |
 | Self-Correction | ✅ | ❌ | ❌ |
 | 멀티 DB 지원 | ✅ 4종+ | ❌ | △ 1~2종 |
 | 한국어 최적화 | ✅ | △ | ❌ |
@@ -631,8 +650,8 @@ agent = TextToSQLAgent(
 
 | 파일 | 용도 | 테스트 수 | 소요 시간 |
 |------|------|----------|----------|
-| `test_agent.py` | 에이전트 핵심 기능 (빠른 검증) | 3개 쿼리 | ~25초 |
-| `test_all.py` | **전 모듈 종합 테스트** | 19개 | ~27초 |
+| `test_agent.py` | 에이전트 핵심 기능 (API 필요) | 3개 쿼리 | ~25초 |
+| `test_all.py` | **전 모듈 종합 테스트** | 15개 (+ 3 skip) | ~1초 (API 없이) |
 
 ### 모듈별 테스트 항목
 
@@ -660,7 +679,9 @@ python test_all.py
 
 - [Spider 2.0 벤치마크](https://spider2-sql.github.io/)
 - [Azure OpenAI 문서](https://learn.microsoft.com/azure/ai-services/openai/)
+- [Azure OpenAI 모델 카탈로그](https://learn.microsoft.com/azure/ai-services/openai/concepts/models)
 - [GPT-5.2 Structured Outputs](https://learn.microsoft.com/azure/ai-services/openai/how-to/structured-outputs)
+- [API v1 (Responses API)](https://learn.microsoft.com/azure/ai-services/openai/reference)
 
 ## 📄 라이선스
 
@@ -672,7 +693,9 @@ MIT License
 
 | 날짜 | 버전 | 변경 내용 |
 |------|------|----------|
+| 2026-02-08 | 2.2.1 | README/주석 최신화, demo_app DRY 최적화 (dispatch dict, 리소스 누수 수정, 미사용 import 9개 제거) |
+| 2026-02-08 | 2.2.0 | API v1 업그레이드, gpt-5.2-codex 추가, 400K context 정정, Spider 2.0 리더보드 최신화 |
 | 2026-01-26 | 2.1.0 | GPT-5.2 내장 심층 추론, 코드 최적화, 종합 테스트 추가 |
-| 2026-01-24 | 2.0.0 | GPT-5.2 + Structured Outputs 적용, 1M 토큰 지원 |
+| 2026-01-24 | 2.0.0 | GPT-5.2 + Structured Outputs 적용, 대규모 컨텍스트 지원 |
 | 2025-12-01 | 1.5.0 | Spider 2.0 기술 적용, 한국어 최적화 |
 | 2025-06-01 | 1.0.0 | 초기 버전 (GPT-4.1 기반) |

@@ -1,8 +1,14 @@
 """
-Schema Linker - 스키마 연결 및 관계 분석 모듈
+Schema Linker - 스키마 연결 및 관계 분석 모듈 (v2.2.1)
 
-Spider 2.0 벤치마크의 핵심 기술 중 하나인 스키마 링킹을 구현합니다.
+Spider 2.0 벤치마크 #1 TCDataAgent-SQL의 핵심 기술인 스키마 링킹을 구현합니다.
 자연어 질문에서 관련 테이블과 컬럼을 식별합니다.
+
+기능:
+- 한국어 50+ 키워드 매핑 (평균→AVG, 합계→SUM, 이상→>= 등)
+- 퍼지 매칭 (오타 자동 수정: employes → employees)
+- 시맨틱 매핑 (직원 → employees, 부서 → departments)
+- 외래키 기반 자동 조인 추론
 """
 
 from __future__ import annotations
@@ -414,17 +420,10 @@ class QueryDecomposer:
             if keyword in question
         )
 
-        # 서브쿼리가 필요한 패턴 검사
-        subquery_patterns = [
-            r"가장.+[은는이가]",  # 최대/최소
-            r"평균.+보다",  # 비교
-            r".+별로.+하고.+",  # 다중 집계
-            r".+[은는이가].+[보다보단]",  # 비교 구문
-        ]
-
+        # 모듈 레벨 패턴 재사용 (중복 제거)
         has_subquery_pattern = any(
-            re.search(pattern, question)
-            for pattern in subquery_patterns
+            pattern.search(question)
+            for pattern in _SUBQUERY_PATTERNS
         )
 
         return condition_count > 0 or has_subquery_pattern

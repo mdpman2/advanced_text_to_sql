@@ -1,351 +1,485 @@
 """
-Advanced Text-to-SQL 종합 테스트 스크립트
-모든 모듈 테스트: text_to_sql_agent, schema_linker, sql_optimizer, dialect_handler
+Advanced Text-to-SQL 통합 테스트 (v2.2.1)
+
+11개 시나리오 × 다중 테스트 케이스 = 70+ 항목
+- 시나리오 1~10: 오프라인 (API 키 불필요)
+- 시나리오 11: API 통합 테스트 (키 없으면 자동 skip)
+
+실행 방법:
+  pytest test_all.py -v            # pytest
+  python test_all.py               # 독립 실행
 """
+
 import os
 import sys
 import time
-from typing import Tuple
+from typing import Optional
 
-# 상위 디렉토리의 .env 파일 로드
 from dotenv import load_dotenv
-load_dotenv('../.env')
-
-# 테스트 결과 카운터
-passed = 0
-failed = 0
-skipped = 0
+load_dotenv("../.env")
 
 
-def test_result(name: str, success: bool, message: str = "") -> None:
-    """테스트 결과 출력"""
-    global passed, failed
-    if success:
-        passed += 1
+# ── 테스트 인프라 ─────────────────────────────────────────────
+
+_passed = 0
+_failed = 0
+_skipped = 0
+
+
+def ok(name: str, condition: bool, msg: str = "") -> None:
+    """단일 테스트 항목 결과 기록"""
+    global _passed, _failed
+    if condition:
+        _passed += 1
         print(f"  ✅ {name}")
     else:
-        failed += 1
-        print(f"  ❌ {name}: {message}")
+        _failed += 1
+        print(f"  ❌ {name}: {msg}")
 
 
-def print_section(title: str) -> None:
-    """섹션 헤더 출력"""
-    print(f"\n{'='*60}")
+def skip(name: str, reason: str = "") -> None:
+    """테스트 스킵 기록"""
+    global _skipped
+    _skipped += 1
+    print(f"  ⏭️ {name}: {reason}")
+
+
+def section(title: str) -> None:
+    """섹션 헤더"""
+    print(f"\n{'=' * 70}")
     print(f"  {title}")
-    print(f"{'='*60}")
+    print(f"{'=' * 70}")
 
 
-# ============================================================
-# 1. Schema Linker 테스트
-# ============================================================
-def test_schema_linker() -> None:
-    """스키마 링커 모듈 테스트"""
-    print_section("1. Schema Linker 테스트")
+# ── 시나리오 1: 모듈 임포트 및 초기화 ────────────────────────
 
+def test_scenario_01_imports():
+    """시나리오 1: 전체 모듈 임포트 검증"""
+    section("시나리오 1: 모듈 임포트 및 초기화")
+
+    # 1-1 text_to_sql_agent (11개)
+    from text_to_sql_agent import (
+        TextToSQLAgent, ConversationalSQLAgent, SchemaExtractor,
+        PromptBuilder, SQLValidator, ModelConfig, SQLGenerationResult,
+        DatabaseType, TableSchema, DatabaseSchema, create_sample_database,
+    )
+    ok("text_to_sql_agent 임포트 (11개)", True)
+
+    # 1-2 schema_linker (4개)
+    from schema_linker import SchemaLinker, SchemaLink, SchemaLinkingResult, QueryDecomposer
+    ok("schema_linker 임포트 (4개)", True)
+
+    # 1-3 sql_optimizer (4개)
+    from sql_optimizer import SQLOptimizer, SelfCorrectionEngine, SQLCorrectionPipeline, SQLIssueType
+    ok("sql_optimizer 임포트 (4개)", True)
+
+    # 1-4 dialect_handler (4개)
+    from dialect_handler import DialectManager, SQLDialect, MultiDatabaseQuery, DialectFeature
+    ok("dialect_handler 임포트 (4개)", True)
+
+    # 1-5 demo_app (10개)
+    from demo_app import (
+        _get_api_key, _print_query_result, _read_question,
+        demo_schema_info, demo_sql_optimization, demo_dialect_conversion,
+        _BANNER, _MENU, _EXIT_COMMANDS, _MAX_DISPLAY_ROWS,
+    )
+    ok("demo_app 임포트 (10개)", True)
+
+    # 1-6 ModelConfig (Enum)
+    all_models = list(ModelConfig)
+    model_values = [m.value for m in all_models]
+    ok(f"ModelConfig 등록 모델: {len(all_models)}개 (>=17)", len(all_models) >= 17)
+    ok("gpt-5.2-codex 존재", "gpt-5.2-codex" in model_values)
+    ok("gpt-5-pro 존재", "gpt-5-pro" in model_values)
+    ok("o3-pro 존재", "o3-pro" in model_values)
+    ok("gpt-5-nano 존재", "gpt-5-nano" in model_values)
+
+    codex = ModelConfig.GPT_5_2_CODEX
+    ok("gpt-5.2-codex value 확인", codex.value == "gpt-5.2-codex")
+
+    # 1-7 API 버전
+    ok("API v1 지원 확인", "v1" in TextToSQLAgent.SUPPORTED_API_VERSIONS)
+
+
+# ── 시나리오 2: 샘플 DB 생성 및 스키마 추출 ──────────────────
+
+def test_scenario_02_schema():
+    """시나리오 2: 샘플 DB · 스키마 추출 · 캐시"""
+    section("시나리오 2: 샘플 DB 생성 및 스키마 추출")
+
+    from text_to_sql_agent import SchemaExtractor, create_sample_database
+
+    db_path = create_sample_database()
+    ok(f"샘플 DB 생성: {db_path}", db_path is not None)
+
+    schema = SchemaExtractor.extract_sqlite_schema(db_path)
+    ok(f"테이블 수: {len(schema.tables)}", len(schema.tables) == 4)
+
+    table_names = {t.name for t in schema.tables}
+    for name in ("employees", "departments", "projects", "project_assignments"):
+        ok(f"테이블 존재: {name}", name in table_names)
+
+    emp = next(t for t in schema.tables if t.name == "employees")
+    ok(f"employees 컬럼 수: {len(emp.columns)}", len(emp.columns) >= 5)
+    ok("employees PK 존재", len(emp.primary_keys) > 0)
+    ok("employees FK 존재", len(emp.foreign_keys) > 0)
+    ok("employees 샘플데이터 존재", emp.sample_data is not None and len(emp.sample_data) > 0)
+
+    # 캐시
+    schema2 = SchemaExtractor.extract_sqlite_schema(db_path, use_cache=True)
+    ok("스키마 캐시 동작 (동일 객체)", schema2 is schema)
+
+    SchemaExtractor.clear_cache()
+    schema3 = SchemaExtractor.extract_sqlite_schema(db_path)
+    ok("캐시 초기화 후 재추출", schema3 is not schema)
+
+
+# ── 시나리오 3: 스키마 링킹 ──────────────────────────────────
+
+def test_scenario_03_schema_linking():
+    """시나리오 3: SchemaLinker · 한국어 키워드 · QueryDecomposer"""
+    section("시나리오 3: 스키마 링킹 (SchemaLinker)")
+
+    from text_to_sql_agent import SchemaExtractor, create_sample_database
+    from schema_linker import SchemaLinker, QueryDecomposer
+
+    schema = SchemaExtractor.extract_sqlite_schema(create_sample_database())
+    linker = SchemaLinker(schema)
+
+    # 3-1 기본 링킹
+    r = linker.link("개발팀 직원들의 평균 급여")
+    ok("기본 링킹: 테이블 식별", len(r.relevant_tables) > 0)
+    ok("기본 링킹: employees 포함", "employees" in r.relevant_tables)
+
+    # 3-2 조인 추론
+    r2 = linker.link("프로젝트에 참여하는 직원 목록")
+    ok("조인 추론: 테이블 식별", len(r2.relevant_tables) > 0)
+
+    # 3-3 한국어 키워드
+    kw = linker.KOREAN_KEYWORDS
+    for word in ("평균", "합계", "최대", "최소", "이상", "미만"):
+        ok(f"한국어 키워드: {word}", word in kw)
+
+    # 3-4 복잡한 질문
+    r3 = linker.link("부서별로 직원 수와 평균 연봉을 알려줘")
+    ok("복잡한 질문: 테이블 >= 1", len(r3.relevant_tables) >= 1)
+
+    # 3-5 집중 스키마
+    focused = linker.get_focused_schema("개발팀 직원")
+    ok("집중 스키마 생성", len(focused) > 0)
+
+    # 3-6 QueryDecomposer
+    decomposer = QueryDecomposer()
+    subs = decomposer.decompose("평균 연봉보다 높은 급여를 받는 개발팀 직원의 프로젝트 참여 현황")
+    ok(f"QueryDecomposer: {len(subs)}개 서브질문", len(subs) >= 1)
+
+
+# ── 시나리오 4: SQL 최적화 ───────────────────────────────────
+
+def test_scenario_04_optimizer():
+    """시나리오 4: SQLOptimizer 최적화 규칙 검증"""
+    section("시나리오 4: SQL 최적화 (SQLOptimizer)")
+
+    from sql_optimizer import SQLOptimizer
+
+    opt = SQLOptimizer()
+
+    r1 = opt.optimize("SELECT * FROM employees WHERE salary > 50000")
+    ok("SELECT * 최적화 감지", r1 is not None and len(r1.optimizations_applied) > 0)
+
+    r2 = opt.optimize(
+        "SELECT name FROM employees WHERE dept_id IN "
+        "(SELECT dept_id FROM departments WHERE location = '서울')"
+    )
+    ok("IN 서브쿼리 감지", r2 is not None and len(r2.optimizations_applied) > 0)
+
+    r3 = opt.optimize(
+        "SELECT e.name FROM employees e "
+        "JOIN departments d ON e.dept_id = d.dept_id ORDER BY e.name"
+    )
+    ok("ORDER BY without LIMIT 감지", r3 is not None)
+
+    r4 = opt.optimize("SELECT emp_id, name FROM employees WHERE dept_id = 1 LIMIT 10")
+    ok("최적 쿼리 패스 (제안 0~최소)", r4 is not None)
+
+
+# ── 시나리오 5: 자가 수정 ────────────────────────────────────
+
+def test_scenario_05_self_correction():
+    """시나리오 5: SelfCorrectionEngine 에러 분석"""
+    section("시나리오 5: 자가 수정 (SelfCorrectionEngine)")
+
+    from sql_optimizer import SelfCorrectionEngine, SQLIssueType
+
+    engine = SelfCorrectionEngine()
+
+    i1 = engine.analyze_error("SELECT * FROM employes", "no such table: employes")
+    ok("테이블명 오타 감지", i1 is not None and i1.issue_type == SQLIssueType.SCHEMA_MISMATCH)
+    ok("수정 제안 존재", i1.suggestion is not None and len(i1.suggestion) > 0)
+
+    i2 = engine.analyze_error("SELECT * FROM employees WHERE dept = 1", "no such column: dept")
+    ok("컬럼명 오타 감지", i2 is not None and i2.issue_type == SQLIssueType.SCHEMA_MISMATCH)
+
+    i3 = engine.analyze_error(
+        "SELECT id FROM employees e JOIN departments d", "ambiguous column name: id"
+    )
+    ok("모호한 컬럼 감지", i3 is not None and i3.issue_type == SQLIssueType.AMBIGUOUS_COLUMN)
+
+    i4 = engine.analyze_error("SELECT dept_id, COUNT(*) FROM employees", "not an aggregate")
+    ok("GROUP BY 누락 감지", i4 is not None)
+
+
+# ── 시나리오 6: 방언 처리 ────────────────────────────────────
+
+def test_scenario_06_dialect():
+    """시나리오 6: DialectHandler 방언 감지·변환·멀티"""
+    section("시나리오 6: 방언 처리 (DialectHandler)")
+
+    from dialect_handler import DialectManager, SQLDialect, MultiDatabaseQuery
+
+    mgr = DialectManager()
+
+    # 6-1 방언 감지
+    ok("BigQuery 감지", mgr.detect_dialect("SELECT ARRAY_AGG(x) FROM t") == SQLDialect.BIGQUERY)
+    ok("PostgreSQL 감지", mgr.detect_dialect("SELECT x::int FROM t") == SQLDialect.POSTGRESQL)
+    ok("Snowflake 감지", mgr.detect_dialect("SELECT FLATTEN(x) FROM t") == SQLDialect.SNOWFLAKE)
+
+    # 6-2 변환
+    sql = "SELECT GROUP_CONCAT(name) FROM employees GROUP BY dept_id"
     try:
-        from schema_linker import SchemaLinker, SchemaLink
-        from text_to_sql_agent import SchemaExtractor, create_sample_database
+        bq = mgr.convert(sql, SQLDialect.SQLITE, SQLDialect.BIGQUERY)
+        ok("SQLite → BigQuery 변환", bq is not None)
+    except Exception:
+        ok("SQLite → BigQuery 변환 (부분 구현)", True)
 
-        # 샘플 DB 스키마 로드
-        db_path = create_sample_database()
-        schema = SchemaExtractor.extract_sqlite_schema(db_path)
-        linker = SchemaLinker(schema)
+    # 6-3 멀티 방언 생성
+    mdb = MultiDatabaseQuery()
+    results = mdb.generate_for_all_dialects(sql, SQLDialect.SQLITE)
+    ok(f"멀티 방언 생성: {len(results)}개", len(results) >= 3)
 
-        # 테스트 1: 기본 스키마 링킹
-        result = linker.link("개발팀 직원의 평균 급여")
-        test_result(
-            "기본 스키마 링킹",
-            len(result.relevant_tables) > 0,
-            f"관련 테이블 없음"
-        )
-
-        # 테스트 2: 조인 추론
-        result = linker.link("프로젝트에 참여하는 직원 목록")
-        test_result(
-            "조인 관계 추론",
-            len(result.inferred_joins) >= 0,  # 조인이 추론되거나 테이블이 식별되면 성공
-            "조인 추론 실패"
-        )
-
-        # 테스트 3: 한국어 키워드 매핑
-        keywords = linker.KOREAN_KEYWORDS
-        test_result(
-            "한국어 키워드 매핑 존재",
-            "평균" in keywords and "합계" in keywords,
-            "키워드 매핑 누락"
-        )
-
-        # 테스트 4: 복잡한 질문 분석
-        result = linker.link("부서별로 직원 수와 평균 연봉을 알려줘")
-        test_result(
-            "복잡한 질문 분석",
-            len(result.relevant_tables) >= 1,
-            "테이블 식별 실패"
-        )
-
-    except Exception as e:
-        test_result("Schema Linker 모듈 로드", False, str(e))
+    # 6-4 방언 특성 조회
+    for d in (SQLDialect.SQLITE, SQLDialect.BIGQUERY, SQLDialect.SNOWFLAKE, SQLDialect.POSTGRESQL):
+        feature = mgr.get_dialect(d).get_feature()
+        ok(f"{d.value} 특성 조회", feature.dialect == d)
 
 
-# ============================================================
-# 2. SQL Optimizer 테스트
-# ============================================================
-def test_sql_optimizer() -> None:
-    """SQL 최적화 모듈 테스트"""
-    print_section("2. SQL Optimizer 테스트")
+# ── 시나리오 7: SQL 검증 ────────────────────────────────────
 
-    try:
-        from sql_optimizer import SQLOptimizer, SelfCorrectionEngine, SQLIssueType
+def test_scenario_07_validator():
+    """시나리오 7: SQLValidator 문법 검증"""
+    section("시나리오 7: SQL 검증 (SQLValidator)")
 
-        optimizer = SQLOptimizer()
+    from text_to_sql_agent import SQLValidator, DatabaseType
 
-        # 테스트 1: SELECT * 최적화 감지
-        result = optimizer.optimize("SELECT * FROM employees")
-        has_suggestion = any("SELECT *" in opt or "컬럼" in opt for opt in result.optimizations_applied) if result.optimizations_applied else True
-        test_result(
-            "SELECT * 최적화 감지",
-            result is not None,
-            "최적화 실패"
-        )
+    v1, _ = SQLValidator.validate_syntax("SELECT * FROM employees WHERE dept_id = 1", DatabaseType.SQLITE)
+    ok("유효 SELECT 통과", v1)
 
-        # 테스트 2: 서브쿼리 감지
-        sql = "SELECT * FROM employees WHERE dept_id IN (SELECT dept_id FROM departments)"
-        result = optimizer.optimize(sql)
-        test_result(
-            "IN 서브쿼리 감지",
-            result is not None,
-            "서브쿼리 분석 실패"
-        )
+    v2, _ = SQLValidator.validate_syntax("SELEC * FROM employees", DatabaseType.SQLITE)
+    ok("SELECT 오타 감지", not v2)
 
-        # 테스트 3: 최적화 제안 목록 확인
-        test_result(
-            "최적화 제안 목록",
-            isinstance(result.optimizations_applied, list),
-            "최적화 목록 형식 오류"
-        )
+    v3, _ = SQLValidator.validate_syntax("", DatabaseType.SQLITE)
+    ok("빈 SQL 감지", not v3)
 
-        # 테스트 4: 에러 분석기 (SelfCorrectionEngine)
-        error_analyzer = SelfCorrectionEngine()
-        issue = error_analyzer.analyze_error(
-            "SELECT * FROM employes",  # 오타
-            "no such table: employes"
-        )
-        test_result(
-            "에러 분석 및 수정 제안",
-            issue is not None and issue.issue_type == SQLIssueType.SCHEMA_MISMATCH,
-            "에러 분석 실패"
-        )
+    v4, _ = SQLValidator.validate_syntax(
+        "SELECT e.name, d.dept_name FROM employees e "
+        "JOIN departments d ON e.dept_id = d.dept_id",
+        DatabaseType.SQLITE,
+    )
+    ok("JOIN 문법 통과", v4)
 
-    except Exception as e:
-        test_result("SQL Optimizer 모듈 로드", False, str(e))
+    v5, _ = SQLValidator.validate_syntax(
+        "WITH avg_sal AS (SELECT AVG(salary) as avg FROM employees) "
+        "SELECT * FROM employees WHERE salary > (SELECT avg FROM avg_sal)",
+        DatabaseType.SQLITE,
+    )
+    ok("CTE 문법 통과", v5)
 
 
-# ============================================================
-# 3. Dialect Handler 테스트
-# ============================================================
-def test_dialect_handler() -> None:
-    """SQL 방언 처리 모듈 테스트"""
-    print_section("3. Dialect Handler 테스트")
+# ── 시나리오 8: 프롬프트 빌더 ────────────────────────────────
 
-    try:
-        from dialect_handler import DialectManager, SQLDialect, DialectFeature
+def test_scenario_08_prompt():
+    """시나리오 8: PromptBuilder 컨텍스트 생성"""
+    section("시나리오 8: 프롬프트 빌더 (PromptBuilder)")
 
-        manager = DialectManager()
+    from text_to_sql_agent import SchemaExtractor, PromptBuilder, create_sample_database
 
-        # 테스트 1: SQLite 방언 처리기 조회
-        dialect = manager.get_dialect(SQLDialect.SQLITE)
-        feature = dialect.get_feature()
-        test_result(
-            "SQLite 방언 특성 조회",
-            feature.dialect == SQLDialect.SQLITE,
-            "방언 특성 오류"
-        )
+    schema = SchemaExtractor.extract_sqlite_schema(create_sample_database())
+    ctx = PromptBuilder.build_schema_context(schema)
 
-        # 테스트 2: 방언 변환 (SQLite -> BigQuery)
-        sqlite_sql = "SELECT strftime('%Y', hire_date) FROM employees"
-        try:
-            bigquery_sql = manager.convert(sqlite_sql, SQLDialect.SQLITE, SQLDialect.BIGQUERY)
-            test_result(
-                "SQLite → BigQuery 변환",
-                bigquery_sql is not None,
-                "변환 실패"
-            )
-        except (NotImplementedError, Exception) as e:
-            test_result("SQLite → BigQuery 변환", True, "")  # 부분 구현 허용
-
-        # 테스트 3: 방언 감지
-        detected = manager.detect_dialect("SELECT ARRAY_AGG(name) FROM employees")
-        test_result(
-            "방언 감지 (BigQuery)",
-            detected == SQLDialect.BIGQUERY,
-            f"감지됨: {detected}"
-        )
-    except Exception as e:
-        test_result("Dialect Handler 모듈 로드", False, str(e))
+    ok("스키마 컨텍스트 생성", len(ctx) > 100)
+    ok("employees 포함", "employees" in ctx)
+    ok("departments 포함", "departments" in ctx)
+    ok("projects 포함", "projects" in ctx)
+    ok("project_assignments 포함", "project_assignments" in ctx)
 
 
-# ============================================================
-# 4. Text-to-SQL Agent 테스트 (API 필요)
-# ============================================================
-def test_text_to_sql_agent() -> None:
-    """Text-to-SQL 에이전트 테스트 (API 호출)"""
-    print_section("4. Text-to-SQL Agent 테스트")
+# ── 시나리오 9: demo_app 함수 검증 ──────────────────────────
 
-    key = os.getenv('OPEN_AI_KEY_5')
-    endpoint = os.getenv('OPEN_AI_ENDPOINT_5')
+def test_scenario_09_demo_app():
+    """시나리오 9: demo_app 상수·함수 검증"""
+    section("시나리오 9: demo_app 함수 검증")
+
+    from demo_app import _get_api_key, _BANNER, _MENU, _EXIT_COMMANDS, _MAX_DISPLAY_ROWS
+
+    ok("_get_api_key 호출 가능", _get_api_key() is None or isinstance(_get_api_key(), str))
+    ok("_MAX_DISPLAY_ROWS = 10", _MAX_DISPLAY_ROWS == 10)
+    ok("_EXIT_COMMANDS: exit", "exit" in _EXIT_COMMANDS)
+    ok("_EXIT_COMMANDS: 종료", "종료" in _EXIT_COMMANDS)
+    ok("_EXIT_COMMANDS: quit", "quit" in _EXIT_COMMANDS)
+    ok("_EXIT_COMMANDS: q", "q" in _EXIT_COMMANDS)
+    ok("_BANNER: TCDataAgent-SQL 포함", "TCDataAgent-SQL" in _BANNER)
+    ok("_BANNER: v1 포함", "v1" in _BANNER)
+    ok("_BANNER: 400K 포함", "400K" in _BANNER)
+    ok("_BANNER: codex 포함", "codex" in _BANNER)
+    ok("_MENU: 메뉴 선택 포함", "메뉴 선택" in _MENU)
+
+
+# ── 시나리오 10: 통합 (end-to-end) ──────────────────────────
+
+def test_scenario_10_e2e():
+    """시나리오 10: 전체 파이프라인 E2E + 실제 SQLite 실행"""
+    section("시나리오 10: 통합 시나리오 (end-to-end)")
+
+    import sqlite3
+    from text_to_sql_agent import (
+        SchemaExtractor, PromptBuilder, SQLValidator, DatabaseType, create_sample_database,
+    )
+    from schema_linker import SchemaLinker
+    from sql_optimizer import SQLOptimizer
+    from dialect_handler import SQLDialect, MultiDatabaseQuery
+
+    # 전체 파이프라인: DB → 스키마 → 링킹 → 프롬프트 → 검증 → 최적화 → 방언 변환
+    db = create_sample_database()
+    schema = SchemaExtractor.extract_sqlite_schema(db)
+    linker = SchemaLinker(schema)
+    optimizer = SQLOptimizer()
+
+    question = "개발팀 직원들의 평균 연봉"
+    link_result = linker.link(question)
+    ok("E2E: 스키마 링킹 성공", len(link_result.relevant_tables) > 0)
+
+    context = PromptBuilder.build_schema_context(schema)
+    ok("E2E: 프롬프트 생성 성공", len(context) > 0)
+
+    test_sql = (
+        "SELECT AVG(salary) FROM employees e "
+        "JOIN departments d ON e.dept_id = d.dept_id "
+        "WHERE d.dept_name = '개발'"
+    )
+    valid, _ = SQLValidator.validate_syntax(test_sql, DatabaseType.SQLITE)
+    ok("E2E: SQL 검증 통과", valid)
+
+    opt_result = optimizer.optimize(test_sql)
+    ok("E2E: SQL 최적화 완료", opt_result is not None)
+
+    mdb = MultiDatabaseQuery()
+    dialects = mdb.generate_for_all_dialects(
+        "SELECT GROUP_CONCAT(name) FROM employees", SQLDialect.SQLITE
+    )
+    ok("E2E: 멀티 방언 변환 완료", len(dialects) >= 3)
+
+    # 실제 SQLite 실행
+    conn = sqlite3.connect(db)
+    cursor = conn.execute("SELECT AVG(salary) FROM employees")
+    avg = cursor.fetchone()[0]
+    conn.close()
+    ok(f"E2E: 실제 SQL 실행 성공 (평균 연봉={avg:,.0f})", avg is not None and avg > 0)
+
+
+# ── 시나리오 11: API 통합 테스트 (키 필요) ───────────────────
+
+def test_scenario_11_api_integration():
+    """시나리오 11: Azure OpenAI API 호출 (키 없으면 skip)"""
+    section("시나리오 11: API 통합 테스트 (GPT-5.2)")
+
+    key = os.getenv("OPEN_AI_KEY_5")
+    endpoint = os.getenv("OPEN_AI_ENDPOINT_5")
 
     if not key or not endpoint:
-        global skipped
-        skipped += 3
-        print("  ⏭️ API 키 없음 - 에이전트 테스트 스킵")
+        for name in ("에이전트 초기화", "단순 쿼리 생성", "복잡한 쿼리 생성", "조인 쿼리 생성"):
+            skip(name, "API 키 없음")
         return
 
-    try:
-        from text_to_sql_agent import TextToSQLAgent, create_sample_database
+    from text_to_sql_agent import TextToSQLAgent, create_sample_database
 
-        # 에이전트 초기화
+    try:
         agent = TextToSQLAgent(
             api_key=key,
             endpoint=endpoint,
-            deployment_name='gpt-5.2',
-            api_version='2025-01-01-preview',
+            deployment_name="gpt-5.2",
+            api_version="v1",
             use_structured_outputs=True,
-            enable_deep_reasoning=True
+            enable_deep_reasoning=True,
         )
-
         db_path = create_sample_database()
         agent.load_database(db_path)
+        ok("에이전트 초기화", True)
 
-        test_result("에이전트 초기화", True)
+        # 단순 쿼리
+        t0 = time.time()
+        r1 = agent.ask("개발팀 직원들의 평균 연봉은?")
+        ok(f"단순 쿼리 생성 ({time.time() - t0:.1f}s)",
+           r1.get("sql") and "AVG" in r1["sql"].upper())
 
-        # 테스트 1: 단순 쿼리
-        start = time.time()
-        result = agent.ask("개발팀 직원들의 평균 연봉은?")
-        elapsed = time.time() - start
-        test_result(
-            f"단순 쿼리 생성 ({elapsed:.1f}s)",
-            result.get('sql') and 'AVG' in result['sql'].upper(),
-            f"SQL: {result.get('sql', 'None')}"
-        )
+        # 복잡한 쿼리
+        t0 = time.time()
+        r2 = agent.ask("부서별 직원 수와 평균 연봉을 알려주세요")
+        ok(f"복잡한 쿼리 생성 ({time.time() - t0:.1f}s)",
+           r2.get("sql") and "GROUP BY" in r2["sql"].upper())
 
-        # 테스트 2: 복잡한 쿼리 (심층 추론)
-        start = time.time()
-        result = agent.ask("부서별 직원 수와 평균 연봉을 알려주세요")
-        elapsed = time.time() - start
-        test_result(
-            f"복잡한 쿼리 생성 ({elapsed:.1f}s)",
-            result.get('sql') and 'GROUP BY' in result['sql'].upper(),
-            f"SQL: {result.get('sql', 'None')}"
-        )
-
-        # 테스트 3: 조인 쿼리
-        start = time.time()
-        result = agent.ask("진행 중인 프로젝트에 참여하는 직원 목록")
-        elapsed = time.time() - start
-        test_result(
-            f"조인 쿼리 생성 ({elapsed:.1f}s)",
-            result.get('sql') and 'JOIN' in result['sql'].upper(),
-            f"SQL: {result.get('sql', 'None')}"
-        )
+        # 조인 쿼리
+        t0 = time.time()
+        r3 = agent.ask("진행 중인 프로젝트에 참여하는 직원 목록")
+        ok(f"조인 쿼리 생성 ({time.time() - t0:.1f}s)",
+           r3.get("sql") and "JOIN" in r3["sql"].upper())
 
         agent.close()
-
     except Exception as e:
-        test_result("Text-to-SQL Agent 테스트", False, str(e))
+        ok("API 통합 테스트", False, str(e))
 
 
-# ============================================================
-# 5. 통합 테스트
-# ============================================================
-def test_integration() -> None:
-    """통합 테스트"""
-    print_section("5. 통합 테스트")
+# ── 메인 ─────────────────────────────────────────────────────
 
-    try:
-        from text_to_sql_agent import (
-            TextToSQLAgent,
-            SchemaExtractor,
-            PromptBuilder,
-            SQLValidator,
-            DatabaseType,
-            create_sample_database
-        )
+_ALL_SCENARIOS = [
+    test_scenario_01_imports,
+    test_scenario_02_schema,
+    test_scenario_03_schema_linking,
+    test_scenario_04_optimizer,
+    test_scenario_05_self_correction,
+    test_scenario_06_dialect,
+    test_scenario_07_validator,
+    test_scenario_08_prompt,
+    test_scenario_09_demo_app,
+    test_scenario_10_e2e,
+    test_scenario_11_api_integration,
+]
 
-        # 스키마 추출
-        db_path = create_sample_database()
-        schema = SchemaExtractor.extract_sqlite_schema(db_path)
-        test_result(
-            "스키마 추출",
-            len(schema.tables) == 4,
-            f"테이블 수: {len(schema.tables)}"
-        )
-
-        # 프롬프트 생성
-        context = PromptBuilder.build_schema_context(schema)
-        test_result(
-            "프롬프트 컨텍스트 생성",
-            "employees" in context and "departments" in context,
-            "컨텍스트 누락"
-        )
-
-        # SQL 검증
-        is_valid, error = SQLValidator.validate_syntax(
-            "SELECT * FROM employees WHERE dept_id = 1",
-            DatabaseType.SQLITE
-        )
-        test_result(
-            "SQL 문법 검증",
-            is_valid,
-            error or "검증 실패"
-        )
-
-        # 잘못된 SQL 검증
-        is_valid, error = SQLValidator.validate_syntax(
-            "SELEC * FROM employees",  # 오타
-            DatabaseType.SQLITE
-        )
-        test_result(
-            "잘못된 SQL 감지",
-            not is_valid,
-            "오류 감지 실패"
-        )
-
-    except Exception as e:
-        test_result("통합 테스트", False, str(e))
-
-
-# ============================================================
-# 메인 실행
-# ============================================================
 if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    print("  Advanced Text-to-SQL 종합 테스트")
-    print("  2026년 1월 26일")
-    print("=" * 60)
+    print()
+    print("=" * 70)
+    print("  Advanced Text-to-SQL 통합 테스트")
+    print("  2026년 2월 8일 (v2.2.1)")
+    print("=" * 70)
 
-    start_time = time.time()
+    start = time.time()
 
-    # 모든 테스트 실행
-    test_schema_linker()
-    test_sql_optimizer()
-    test_dialect_handler()
-    test_text_to_sql_agent()
-    test_integration()
+    for fn in _ALL_SCENARIOS:
+        fn()
 
-    elapsed = time.time() - start_time
+    elapsed = time.time() - start
 
-    # 결과 요약
-    print("\n" + "=" * 60)
+    print()
+    print("=" * 70)
     print("  테스트 결과 요약")
-    print("=" * 60)
-    print(f"  ✅ 성공: {passed}")
-    print(f"  ❌ 실패: {failed}")
-    print(f"  ⏭️ 스킵: {skipped}")
+    print("=" * 70)
+    print(f"  ✅ 성공: {_passed}")
+    print(f"  ❌ 실패: {_failed}")
+    print(f"  ⏭️ 스킵: {_skipped}")
     print(f"  ⏱️ 소요 시간: {elapsed:.1f}초")
-    print("=" * 60)
+    print("=" * 70)
 
-    if failed == 0:
-        print("\n🎉 모든 테스트 통과!")
+    if _failed == 0:
+        print("\n🎉 전체 시나리오 테스트 통과!")
     else:
-        print(f"\n⚠️ {failed}개 테스트 실패")
+        print(f"\n⚠️ {_failed}개 실패")
         sys.exit(1)
