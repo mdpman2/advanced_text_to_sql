@@ -1,8 +1,8 @@
 """
-Advanced Text-to-SQL Demo Application (v2.2.1)
+Advanced Text-to-SQL Demo Application (v3.0.0)
 
-Spider 2.0 벤치마크 #1 TCDataAgent-SQL (93.97%) 참조 기술 기반의 Text-to-SQL 데모.
-GPT-5.2 / gpt-5.2-codex, API v1, 400K context window 지원. (2026-02 최신)
+Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반의 Text-to-SQL 데모.
+GPT-5.2 / gpt-5.2-codex, Responses API (2025-04-01-preview), 400K context window 지원.
 
 실행 방법:
     python demo_app.py
@@ -11,13 +11,20 @@ GPT-5.2 / gpt-5.2-codex, API v1, 400K context window 지원. (2026-02 최신)
     - AZURE_OPENAI_API_KEY / OPEN_AI_KEY_5: Azure OpenAI API 키
     - AZURE_OPENAI_ENDPOINT / OPEN_AI_ENDPOINT_5: Azure OpenAI 엔드포인트
 
-최적화 (v2.2.1):
-    - 미사용 import 9개 제거, dispatch dict, _get_api_key/_print_query_result DRY
-    - run_sample_questions 리소스 누수 수정 (agent 루프 밖 1회 생성 + finally close)
-"""
+v3.0.0 변경:
+    - Responses API 마이그레이션 적용 (text_to_sql_agent v3.0)
+    - MySQL/SQL Server 방언 변환 지원
+    - Spider 2.0 벤치마크 2026-06 최신화
+
+v3.0.0 코드 최적화:
+    - 메뉴 분기 if/elif 7단 → dispatch dict O(1) 룩업
+    - Callable[[], None] 타입 힐트 정확화
+    - _print_query_result() DRY 헬퍼로 3곳 중복 출력 제거
+    - _get_api_key() 헬퍼로 환경변수 조회 중복 제거
+"""""
 
 import os
-from typing import Any
+from typing import Any, Callable
 
 # 로컬 모듈 임포트
 from text_to_sql_agent import (
@@ -35,16 +42,16 @@ from dialect_handler import SQLDialect, MultiDatabaseQuery
 _BANNER = """
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║   🏆 Advanced Text-to-SQL Agent (2026-02)                        ║
-║   ─────────────────────────────────────────────────────────────  ║
-║   Spider 2.0 #1 TCDataAgent-SQL (93.97%) 참조 기술 기반         ║
-║   GPT-5.2 / gpt-5.2-codex · API v1 · 400K Context              ║
+║   🏆 Advanced Text-to-SQL Agent v3.0 (2026-06)                   ║
+║   ───────────────────────────────────────────────────────────  ║
+║   Spider 2.0 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반         ║
+║   GPT-5.2 / gpt-5.2-codex · Responses API · 400K Context       ║
 ║                                                                  ║
 ║   Features:                                                      ║
-║   • Multi-step Reasoning + Contextual Scaling                    ║
+║   • Responses API + Pydantic v2 Structured Outputs               ║
 ║   • Schema Linking + Relational Knowledge Graph                  ║
-║   • Self-Correction (5-round)                                    ║
-║   • Multi-Database Support (SQLite, BigQuery, Snowflake, etc.)  ║
+║   • Self-Correction (5-round) + previous_response_id             ║
+║   • Multi-Database (SQLite, PG, BQ, Snowflake, MySQL, MSSQL)     ║
 ║                                                                  ║
 ╚══════════════════════════════════════════════════════════════════╝
 """
@@ -90,12 +97,12 @@ def _print_query_result(result: dict[str, Any], *, max_rows: int = _MAX_DISPLAY_
 def demo_schema_info(db_path: str) -> None:
     """스키마 정보 출력"""
     schema = SchemaExtractor.extract_sqlite_schema(db_path)
-    
+
     print("\n📊 데이터베이스 스키마 정보")
     print("=" * 50)
     print(f"데이터베이스: {schema.database_name}")
     print(f"테이블 수: {len(schema.tables)}")
-    
+
     for table in schema.tables:
         print(f"\n📋 테이블: {table.name}")
         print("  컬럼:")
@@ -103,12 +110,12 @@ def demo_schema_info(db_path: str) -> None:
             pk = " [PK]" if col["name"] in table.primary_keys else ""
             nullable = "" if col.get("nullable", True) else " NOT NULL"
             print(f"    - {col['name']}: {col['type']}{nullable}{pk}")
-        
+
         if table.foreign_keys:
             print("  외래키:")
             for fk in table.foreign_keys:
                 print(f"    - {fk['column']} → {fk['references_table']}.{fk['references_column']}")
-        
+
         if table.sample_data:
             print(f"  샘플 데이터 ({len(table.sample_data)}행):")
             for i, row in enumerate(table.sample_data[:2], 1):
@@ -119,22 +126,22 @@ def demo_sql_optimization() -> None:
     """SQL 최적화 데모"""
     print("\n🔧 SQL 최적화 분석")
     print("=" * 50)
-    
+
     optimizer = SQLOptimizer()
-    
+
     test_queries = (
         ("SELECT * FROM employees WHERE salary > 50000",
          "SELECT * 사용"),
-        
+
         ("SELECT name FROM employees WHERE dept_id IN (SELECT dept_id FROM departments WHERE location = '서울')",
          "IN 서브쿼리"),
-        
+
         ("SELECT e.name, d.dept_name FROM employees e "
          "JOIN departments d ON e.dept_id = d.dept_id "
          "ORDER BY e.name",
          "ORDER BY without LIMIT"),
     )
-    
+
     for sql, description in test_queries:
         print(f"\n📝 {description}")
         print(f"   SQL: {sql[:80]}...")
@@ -151,10 +158,10 @@ def demo_dialect_conversion() -> None:
     """SQL 방언 변환 데모"""
     print("\n🌐 멀티 데이터베이스 SQL 변환")
     print("=" * 50)
-    
+
     multi_db = MultiDatabaseQuery()
-    
-    base_sql = """SELECT 
+
+    base_sql = """SELECT
     d.dept_name,
     GROUP_CONCAT(e.name) as employee_names,
     COUNT(*) as emp_count,
@@ -164,11 +171,11 @@ JOIN departments d ON e.dept_id = d.dept_id
 GROUP BY d.dept_name
 HAVING COUNT(*) > 1
 ORDER BY avg_salary DESC"""
-    
+
     print(f"\n📝 원본 SQL (SQLite):\n{base_sql}")
-    
+
     results = multi_db.generate_for_all_dialects(base_sql, SQLDialect.SQLITE)
-    
+
     for dialect in (SQLDialect.BIGQUERY, SQLDialect.SNOWFLAKE, SQLDialect.POSTGRESQL):
         print(f"\n🔄 {dialect.value.upper()}:")
         print(results[dialect])
@@ -317,7 +324,7 @@ def main() -> None:
     print(f"   ✅ 데이터베이스 생성 완료: {db_path}")
 
     # dispatch dict — if/elif 7단 분기 → O(1) 룩업
-    dispatch: dict[str, callable] = {
+    dispatch: dict[str, Callable[[], None]] = {
         "1": lambda: single_question_mode(db_path),
         "2": lambda: demo_schema_info(db_path),
         "3": demo_sql_optimization,

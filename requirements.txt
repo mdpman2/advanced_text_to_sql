@@ -1,5 +1,7 @@
-# Core dependencies (2026-02 최신 버전)
-openai>=1.65.0  # GPT-5.2, GPT-5.2-codex, Responses API (v1), Structured Outputs, 400K context
+# Core dependencies (v3.0.0 — 2026-06 최신)
+openai>=1.93.0  # GPT-5.2, Responses API, Structured Outputs, previous_response_id
+pydantic>=2.10.0  # Structured Outputs용 Pydantic v2 BaseModel (v3.0 신규)
+httpx>=0.28.0  # OpenAI SDK HTTP 클라이언트 (v3.0 신규)
 
 # Optional: Anthropic Claude support
 # anthropic>=0.45.0  # Claude Opus 4.5, Sonnet 4.5 지원
@@ -8,6 +10,8 @@ openai>=1.65.0  # GPT-5.2, GPT-5.2-codex, Responses API (v1), Structured Outputs
 # psycopg2-binary>=2.9.9  # PostgreSQL
 # google-cloud-bigquery>=3.15.0  # BigQuery
 # snowflake-connector-python>=3.8.0  # Snowflake
+# mysql-connector-python>=9.0.0  # MySQL (v3.0 신규)
+# pyodbc>=5.2.0  # SQL Server (v3.0 신규)
 
 # Embedding 기반 스키마 링킹 (선택적)
 # numpy>=1.26.0

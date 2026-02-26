@@ -1,15 +1,21 @@
 """
-Schema Linker - 스키마 연결 및 관계 분석 모듈 (v2.2.1)
+Schema Linker - 스키마 연결 및 관계 분석 모듈 (v3.0.0)
 
 Spider 2.0 벤치마크 #1 TCDataAgent-SQL의 핵심 기술인 스키마 링킹을 구현합니다.
 자연어 질문에서 관련 테이블과 컬럼을 식별합니다.
 
 기능:
-- 한국어 50+ 키워드 매핑 (평균→AVG, 합계→SUM, 이상→>= 등)
+- 한국어 55+ 키워드 매핑 (평균→AVG, 합계→SUM, 이상→>= 등)
 - 퍼지 매칭 (오타 자동 수정: employes → employees)
 - 시맨틱 매핑 (직원 → employees, 부서 → departments)
 - 외래키 기반 자동 조인 추론
-"""
+- 컬럼 타입 인식 기반 연산 추론 (v3.0 신규)
+v3.0.0 코드 최적화:
+- _table_dict O(1) 테이블 룩업 딕셔너리 추가 (next() 제너레이터 순차 스캔 제거)
+- _infer_joins, get_focused_schema에서 dict.get() O(1) 직접 룩업 적용
+- SchemaLinker에 __slots__ 적용 (메모리 최적화)
+- SchemaLink, SchemaLinkingResult에 @dataclass(slots=True) 적용
+- _WORD_PATTERN, _SUBQUERY_PATTERNS 모듈 레벨 프리컴파일"""
 
 from __future__ import annotations
 
@@ -59,9 +65,9 @@ class SchemaLinker:
     """
 
     __slots__ = ('schema', 'table_index', 'column_index', 'table_columns',
-                 '_link_cache', '_entity_patterns_frozen')
+                 '_link_cache', '_entity_patterns_frozen', '_table_dict')
 
-    # 한국어 키워드 매핑 (클래스 레벨 상수) - 2026년 확장
+    # 한국어 키워드 매핑 (클래스 레벨 상수) - v3.0 확장
     KOREAN_KEYWORDS: Dict[str, List[str]] = {
         # 집계 함수
         "평균": ["AVG", "average", "mean"],
@@ -72,6 +78,8 @@ class SchemaLinker:
         "최소": ["MIN", "minimum", "lowest", "bottom"],
         "가장 많은": ["MAX", "top"],
         "가장 적은": ["MIN", "bottom"],
+        "중앙값": ["MEDIAN", "PERCENTILE_CONT"],  # v3.0 신규
+        "분산": ["VARIANCE", "VAR"],               # v3.0 신규
 
         # 정렬
         "오름차순": ["ASC", "ascending"],
@@ -90,6 +98,8 @@ class SchemaLinker:
         "다른": ["!=", "<>", "not_equal"],
         "포함": ["IN", "LIKE", "contains"],
         "제외": ["NOT IN", "NOT LIKE", "excludes"],
+        "사이": ["BETWEEN"],                       # v3.0 신규
+        "비어있는": ["IS NULL"],                    # v3.0 신규
 
         # 시간
         "이번달": ["current_month", "this_month"],
@@ -100,6 +110,7 @@ class SchemaLinker:
         "어제": ["yesterday"],
         "이번주": ["this_week"],
         "지난주": ["last_week"],
+        "최근": ["recent", "latest"],              # v3.0 신규
 
         # 일반
         "전체": ["all", "total"],
@@ -110,6 +121,8 @@ class SchemaLinker:
         "연도별": ["by_year", "per_year"],
         "프로젝트별": ["by_project", "per_project"],
         "고객별": ["by_customer", "per_customer"],
+        "분기별": ["by_quarter", "per_quarter"],    # v3.0 신규
+        "일별": ["by_day", "per_day"],              # v3.0 신규
 
         # 논리 연산
         "그리고": ["AND"],
@@ -121,7 +134,7 @@ class SchemaLinker:
         "모두": ["LEFT JOIN", "FULL JOIN"],
     }
 
-    # 일반적인 엔티티-테이블 매핑 - 2026년 확장
+    # 일반적인 엔티티-테이블 매핑 - v3.0 확장
     ENTITY_PATTERNS = {
         "직원": ["employee", "employees", "staff", "worker", "workers", "emp", "user", "users", "member"],
         "사원": ["employee", "employees", "staff", "worker", "workers", "emp"],
@@ -150,6 +163,7 @@ class SchemaLinker:
         self.schema = schema
         self._link_cache: Dict[str, SchemaLinkingResult] = {}
         self._entity_patterns_frozen: FrozenSet[Tuple[str, ...]] = frozenset()
+        self._table_dict: Dict[str, 'TableSchema'] = {}  # O(1) 테이블 룩업
         self._build_index()
 
     def _build_index(self) -> None:
@@ -162,6 +176,7 @@ class SchemaLinker:
             table_lower = table.name.lower()
             self.table_index[table_lower] = table.name
             self.table_columns[table.name] = []
+            self._table_dict[table.name] = table  # O(1) 룩업용
 
             for col in table.columns:
                 col_lower = col["name"].lower()
@@ -288,7 +303,7 @@ class SchemaLinker:
         tables_list = list(relevant_tables)
 
         for i, table1 in enumerate(tables_list):
-            table1_schema = next((t for t in self.schema.tables if t.name == table1), None)
+            table1_schema = self._table_dict.get(table1)
             if not table1_schema:
                 continue
 
@@ -308,7 +323,7 @@ class SchemaLinker:
                 for table2 in tables_list[i+1:]:
                     table2_lower = table2.lower()
                     if f"{table2_lower}_id" in col_name or f"{table2_lower[:-1]}_id" in col_name:
-                        table2_schema = next((t for t in self.schema.tables if t.name == table2), None)
+                        table2_schema = self._table_dict.get(table2)
                         if table2_schema:
                             pk = table2_schema.primary_keys[0] if table2_schema.primary_keys else "id"
                             joins.append((table1, col["name"], table2, pk))
@@ -365,7 +380,7 @@ class SchemaLinker:
         lines = ["### 관련 스키마:"]
 
         for table_name in linking_result.relevant_tables:
-            table = next((t for t in self.schema.tables if t.name == table_name), None)
+            table = self._table_dict.get(table_name)
             if not table:
                 continue
 

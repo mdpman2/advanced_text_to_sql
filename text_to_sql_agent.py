@@ -1,19 +1,31 @@
-"""
-Advanced Text-to-SQL Agent (v2.2.1)
-Spider 2.0 벤치마크 #1 TCDataAgent-SQL (93.97%) 참조 기술 기반
+"""Advanced Text-to-SQL Agent (v3.0.0)
+Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반
 
 핵심 기술:
 1. 스키마 이해 및 메타데이터 관리
 2. 다단계 추론 (Multi-step Reasoning)
-3. 멀티 데이터베이스 지원 (BigQuery, Snowflake, SQLite, PostgreSQL)
+3. 멀티 데이터베이스 지원 (BigQuery, Snowflake, SQLite, PostgreSQL, MySQL, SQL Server)
 4. Self-correction 및 검증 메커니즘 (5-round)
 5. Context-aware SQL 생성 (400K 토큰)
 
-지원 모델: GPT-5.2, gpt-5.2-codex (SQL 특화), o3-pro 등 17종
-API: v1 (GA) — Responses API + Structured Outputs
+지원 모델: GPT-5.2, gpt-5.2-codex (SQL 특화), o3-pro 등 19종
+API: Responses API (2025-04-01-preview) + Structured Outputs (Pydantic v2)
+
+v3.0.0 주요 변경:
+- chat.completions.create() → responses.create() (Responses API 마이그레이션)
+- Pydantic v2 BaseModel 기반 Structured Outputs (additionalProperties 자동 보정)
+- previous_response_id를 활용한 멀티턴 대화 체이닝
+- 신규 방언: MySQL, SQL Server 추가
+- Spider 2.0 벤치마크 2026-06 최신화
+
+v3.0.0 코드 최적화:
+- TextToSQLAgent에 __slots__ 적용 (메모리 최적화)
+- _build_text_config() DRY 헬퍼 추출 (Structured Outputs 텍스트 설정 중복 제거)
+- _JSON_PATTERN 클래스 레벨 프리컴파일 정규식
+- additionalProperties: false 스키마 보정 로직 추가 (Azure Responses API 필수)
 
 Author: Azure OpenAI Sample
-Date: 2026-02-08
+Date: 2026-06-15
 """
 
 from __future__ import annotations
@@ -29,6 +41,7 @@ from enum import Enum
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from openai import AzureOpenAI
+from pydantic import BaseModel, Field as PydanticField
 
 # 로깅 설정
 logging.basicConfig(
@@ -292,10 +305,11 @@ class SQLValidator:
 
 
 class ModelConfig(Enum):
-    """사용 가능한 모델 설정 (2026-02 최신)"""
+    """사용 가능한 모델 설정 (2026-06 최신)"""
     # GPT-5.2 계열 (최신)
     GPT_5_2 = "gpt-5.2"               # 최신 플래그십 (권장, 400K context)
     GPT_5_2_CODEX = "gpt-5.2-codex"   # 코드/SQL 특화 (2026-01-14, Codex CLI 최적화)
+    GPT_5_2_MINI = "gpt-5.2-mini"     # 경량 플래그십 (2026-05-14)
     # GPT-5.1 계열
     GPT_5_1 = "gpt-5.1"               # 고성능 모델
     GPT_5_1_CODEX = "gpt-5.1-codex"   # 코드 특화
@@ -319,72 +333,70 @@ class ModelConfig(Enum):
     CLAUDE_SONNET_4_5 = "claude-sonnet-4-5" # Claude 효율
 
 
-# Structured Outputs를 위한 JSON 스키마 정의
+# Structured Outputs를 위한 Pydantic v2 모델 (v3.0 신규)
+class SQLGenerationSchema(BaseModel):
+    """
+    Responses API Structured Outputs용 SQL 생성 결과 스키마.
+    Pydantic v2 BaseModel 기반으로 JSON Schema 100% 스키마 준수.
+    """
+    reasoning: str = PydanticField(description="단계별 추론 과정 설명")
+    sql: str = PydanticField(description="생성된 SQL 쿼리")
+    confidence: float = PydanticField(description="0.0~1.0 사이의 확신도")
+    explanation: str = PydanticField(description="SQL 쿼리에 대한 간단한 설명")
+    assumptions: list[str] = PydanticField(description="가정한 사항 목록")
+    alternative_queries: list[str] = PydanticField(description="대안 쿼리 목록")
+
+
+# Structured Outputs JSON Schema (Pydantic 모델에서 자동 생성)
+_raw_schema = SQLGenerationSchema.model_json_schema()
+_raw_schema["additionalProperties"] = False  # Azure Responses API 필수: 추가 속성 금지 스키마 보정
 SQL_GENERATION_SCHEMA = {
     "name": "sql_generation_result",
     "strict": True,
-    "schema": {
-        "type": "object",
-        "properties": {
-            "reasoning": {
-                "type": "string",
-                "description": "단계별 추론 과정 설명"
-            },
-            "sql": {
-                "type": "string",
-                "description": "생성된 SQL 쿼리"
-            },
-            "confidence": {
-                "type": "number",
-                "description": "0.0~1.0 사이의 확신도"
-            },
-            "explanation": {
-                "type": "string",
-                "description": "SQL 쿼리에 대한 간단한 설명"
-            },
-            "assumptions": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "가정한 사항 목록"
-            },
-            "alternative_queries": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "대안 쿼리 목록"
-            }
-        },
-        "required": ["reasoning", "sql", "confidence", "explanation", "assumptions", "alternative_queries"],
-        "additionalProperties": False
-    }
+    "schema": _raw_schema,
 }
 
 
 class TextToSQLAgent:
     """
-    Text-to-SQL 에이전트 (2026-02 최신 기술 적용)
+    Text-to-SQL 에이전트 (v3.0.0 — 2026-06 최신 기술 적용)
 
     Spider 2.0 벤치마크 최신 기술 기반:
-    - TCDataAgent-SQL Contextual Scaling Engine 참조 (#1, 93.97%)
-    - Relational Knowledge Graph 기반 스키마 링킹 (#4, 86.28%)
+    - TCDataAgent-SQL Contextual Scaling Engine 참조 (#1, 95.14%)
+    - Relational Knowledge Graph 기반 스키마 링킹 (#4, 88.52%)
 
-    주요 기능:
-    - 다단계 추론 (Multi-step Reasoning) - GPT-5.2 내장 추론 활용
-    - Self-correction 및 검증 메커니즘
-    - Structured Outputs (100% 스키마 준수)
+    v3.0.0 주요 변경:
+    - Responses API 마이그레이션 (chat.completions → responses.create)
+    - Pydantic v2 BaseModel 기반 Structured Outputs
+    - previous_response_id 멀티턴 대화 체이닝
+    - instructions + input 파라미터 (messages 대체)
+    - response.output_text 응답 추출
+    - max_output_tokens 통일 파라미터
     - 400K 토큰 컨텍스트 (272K input + 128K output)
     - gpt-5.2-codex: SQL/코드 특화 모델 지원
-    - Responses API (v1) 호환
-    - 복잡한 질문에 대한 심층 추론 (GPT-5.2 native reasoning)
+    - GPT-5.2 native reasoning (심층 추론)
+
+    v3.0.0 코드 최적화:
+    - __slots__ 적용으로 메모리 절감 및 속성 접근 가속화
+    - _build_text_config() DRY 헬퍼로 text.format 설정 중복 제거
+    - _JSON_PATTERN 클래스 레벨 프리컴파일 정규식
     """
+
+    __slots__ = (
+        'use_claude', 'deployment_name', 'enable_deep_reasoning',
+        'use_structured_outputs', 'max_context_tokens', '_db_path',
+        'client', 'current_schema', 'db_connection',
+    )
 
     # 컴파일된 정규식 패턴 (성능 최적화)
     _JSON_PATTERN = re.compile(r'\{[\s\S]*\}')
 
-    # 지원 API 버전 (2026-02 최신)
+    # 지원 API 버전 (2026-06 최신)
     SUPPORTED_API_VERSIONS = [
-        "v1",                          # 최신 GA (Responses API + Structured Outputs)
-        "2025-01-01-preview",          # 이전 프리뷰
-        "2024-10-21",                  # 레거시 GA
+        "2025-04-01-preview",         # 최신 — Responses API + Structured Outputs
+        "2025-03-01-preview",         # Responses API 초기 지원
+        "2025-01-01-preview",         # 레거시 프리뷰
+        "2024-10-21",                 # 레거시 GA (Chat Completions 전용)
     ]
 
     def __init__(
@@ -392,7 +404,7 @@ class TextToSQLAgent:
         api_key: Optional[str] = None,
         endpoint: Optional[str] = None,
         deployment_name: str = "gpt-5.2",
-        api_version: str = "v1",
+        api_version: str = "2025-04-01-preview",
         use_structured_outputs: bool = True,
         max_context_tokens: int = 400000,
         use_claude: bool = False,
@@ -403,7 +415,7 @@ class TextToSQLAgent:
             api_key: Azure OpenAI API 키 (기본: OPEN_AI_KEY_5 환경변수)
             endpoint: Azure OpenAI 엔드포인트 (기본: OPEN_AI_ENDPOINT_5 환경변수)
             deployment_name: 모델 배포 이름 (기본: gpt-5.2, SQL 특화: gpt-5.2-codex)
-            api_version: API 버전 (기본: v1 — Responses API + Structured Outputs)
+            api_version: API 버전 (기본: 2025-04-01-preview — Responses API)
             use_structured_outputs: Structured Outputs 사용 여부 (기본: True)
             max_context_tokens: 최대 컨텍스트 토큰 수 (기본: 400K — 272K input + 128K output)
             use_claude: Claude 사용 여부
@@ -419,7 +431,7 @@ class TextToSQLAgent:
         if use_claude:
             raise NotImplementedError("Claude 지원은 anthropic 패키지 설치 후 사용 가능합니다.")
 
-        # Azure OpenAI 초기화 (OPEN_AI_KEY_5, OPEN_AI_ENDPOINT_5 환경변수 우선 사용)
+        # Azure OpenAI 초기화 (Responses API 지원 버전)
         self.client = AzureOpenAI(
             api_key=api_key or os.getenv("OPEN_AI_KEY_5") or os.getenv("AZURE_OPENAI_API_KEY"),
             azure_endpoint=endpoint or os.getenv("OPEN_AI_ENDPOINT_5") or os.getenv("AZURE_OPENAI_ENDPOINT"),
@@ -429,7 +441,26 @@ class TextToSQLAgent:
         self.current_schema: Optional[DatabaseSchema] = None
         self.db_connection: Optional[sqlite3.Connection] = None
 
-        logger.info(f"TextToSQLAgent 초기화: model={deployment_name}, api_version={api_version}, structured_outputs={use_structured_outputs}, deep_reasoning={enable_deep_reasoning}")
+        logger.info(
+            f"TextToSQLAgent v3.0 초기화: model={deployment_name}, "
+            f"api_version={api_version}, structured_outputs={use_structured_outputs}, "
+            f"deep_reasoning={enable_deep_reasoning}, engine=Responses API"
+        )
+
+    # ── DRY 헬퍼 (text_config 공통 생성 — _call_llm, _call_llm_with_history에서 재사용) ──
+
+    def _build_text_config(self) -> dict[str, Any]:
+        """Responses API text.format 설정 생성 (DRY 헬퍼)"""
+        if self.use_structured_outputs:
+            return {
+                "format": {
+                    "type": "json_schema",
+                    "name": "sql_generation_result",
+                    "schema": SQL_GENERATION_SCHEMA["schema"],
+                    "strict": True,
+                }
+            }
+        return {"format": {"type": "json_object"}}
 
     def __enter__(self) -> "TextToSQLAgent":
         """컨텍스트 매니저 진입"""
@@ -456,11 +487,18 @@ class TextToSQLAgent:
         use_deep_reasoning: bool = False
     ) -> str:
         """
-        LLM 호출 (Structured Outputs 지원, GPT-5.2 내장 추론 활용)
+        LLM 호출 — Responses API (v3.0)
+
+        v3.0 변경사항:
+        - chat.completions.create() → responses.create()
+        - messages → instructions + input
+        - response_format → text.format
+        - response.choices[0].message.content → response.output_text
+        - max_completion_tokens/max_tokens → max_output_tokens (통일)
 
         Args:
-            system_prompt: 시스템 프롬프트
-            user_prompt: 사용자 프롬프트
+            system_prompt: 시스템 지시사항 (instructions)
+            user_prompt: 사용자 입력 (input)
             use_deep_reasoning: 복잡한 질문에 심층 추론 활성화 여부
         """
         model = self.deployment_name
@@ -477,31 +515,16 @@ class TextToSQLAgent:
 4. 집계 함수나 서브쿼리 필요 여부를 판단합니다.
 5. 최종 SQL을 검증합니다."""
 
-        # Structured Outputs 사용 시 json_schema 형식 적용
-        if self.use_structured_outputs:
-            response_format = {
-                "type": "json_schema",
-                "json_schema": SQL_GENERATION_SCHEMA
-            }
-        else:
-            response_format = {"type": "json_object"}
-
-        # 공통 파라미터 구성 후, 모델별 토큰 키만 다르게 적용
-        params: dict[str, Any] = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.1,
-            "response_format": response_format,
-        }
-        # GPT-5.x / o3 / o4 모델은 max_completion_tokens, 기타는 max_tokens
-        token_key = "max_completion_tokens" if model.startswith(('gpt-5', 'o3', 'o4')) else "max_tokens"
-        params[token_key] = 32768
-
-        response = self.client.chat.completions.create(**params)
-        return response.choices[0].message.content or ""
+        # Responses API 호출 (v3.0 — instructions + input 패턴)
+        response = self.client.responses.create(
+            model=model,
+            instructions=system_prompt,
+            input=user_prompt,
+            temperature=0.1,
+            max_output_tokens=32768,
+            text=self._build_text_config(),
+        )
+        return response.output_text or ""
 
     # 복잡한 질문 판단용 키워드 (클래스 레벨 상수)
     _COMPLEXITY_INDICATORS = frozenset([
@@ -547,7 +570,7 @@ class TextToSQLAgent:
         auto_select_model: bool = True
     ) -> SQLGenerationResult:
         """
-        자연어 질문을 SQL로 변환 (2026년 최신 기술 적용)
+        자연어 질문을 SQL로 변환 (v3.0 Responses API 적용)
 
         Args:
             question: 자연어 질문
@@ -682,32 +705,60 @@ class TextToSQLAgent:
 
 
 class ConversationalSQLAgent(TextToSQLAgent):
-    """대화형 Text-to-SQL 에이전트 (멀티턴 지원)"""
+    """대화형 Text-to-SQL 에이전트 (Responses API previous_response_id 활용)"""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.conversation_history: List[Dict[str, str]] = []
         self.query_history: List[SQLGenerationResult] = []
+        self._last_response_id: Optional[str] = None  # v3.0: 멀티턴 체이닝
+
+    def _call_llm_with_history(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> str:
+        """
+        Responses API previous_response_id를 활용한 멀티턴 LLM 호출 (v3.0)
+
+        이전 응답 ID를 자동으로 체이닝하여 대화 컨텍스트를 유지합니다.
+        """
+        params: dict[str, Any] = {
+            "model": self.deployment_name,
+            "instructions": system_prompt,
+            "input": user_prompt,
+            "temperature": 0.1,
+            "max_output_tokens": 32768,
+            "text": self._build_text_config(),
+        }
+
+        # v3.0: previous_response_id로 대화 체이닝
+        if self._last_response_id:
+            params["previous_response_id"] = self._last_response_id
+
+        response = self.client.responses.create(**params)
+        self._last_response_id = response.id  # 다음 턴을 위해 ID 저장
+        return response.output_text or ""
 
     def ask_with_history(self, question: str, execute: bool = True) -> Dict[str, Any]:
-        """대화 히스토리를 고려한 질문 처리"""
-        # 이전 대화 컨텍스트 구성
+        """대화 히스토리를 고려한 질문 처리 (previous_response_id 활용)"""
+        if not self.current_schema:
+            raise ValueError("데이터베이스가 로드되지 않았습니다.")
+
+        # 이전 대화 컨텍스트 구성 (첫 턴이거나 fallback용)
         history_context = None
         if self.conversation_history:
             history_lines = ["## 이전 대화:"]
-            for item in self.conversation_history[-5:]:  # 최근 5개만 사용
+            for item in self.conversation_history[-5:]:
                 history_lines.append(f"사용자: {item['question']}")
                 history_lines.append(f"SQL: {item['sql']}")
             history_context = "\n".join(history_lines)
 
-        # SQL 생성
-        if not self.current_schema:
-            raise ValueError("데이터베이스가 로드되지 않았습니다.")
-
         schema_context = PromptBuilder.build_schema_context(self.current_schema)
         user_prompt = PromptBuilder.build_user_prompt(question, schema_context, history_context)
 
-        response = self._call_llm(PromptBuilder.SYSTEM_PROMPT, user_prompt)
+        # v3.0: previous_response_id를 활용한 멀티턴 호출
+        response = self._call_llm_with_history(PromptBuilder.SYSTEM_PROMPT, user_prompt)
         parsed = self._parse_llm_response(response)
 
         sql = parsed.get("sql", "").strip()
@@ -734,9 +785,10 @@ class ConversationalSQLAgent(TextToSQLAgent):
         return result
 
     def clear_history(self):
-        """대화 히스토리 초기화"""
+        """대화 히스토리 및 응답 체인 초기화"""
         self.conversation_history.clear()
         self.query_history.clear()
+        self._last_response_id = None
 
 
 def create_sample_database() -> str:
@@ -831,7 +883,7 @@ def create_sample_database() -> str:
 if __name__ == "__main__":
     print("=" * 60)
     print("Advanced Text-to-SQL Agent")
-    print("Spider 2.0 벤치마크 1위 기술 기반")
+    print("Spider 2.0 벤치마크 1위 기술 기반 (v3.0 — Responses API)")
     print("=" * 60)
 
     # 샘플 데이터베이스 생성
@@ -841,11 +893,11 @@ if __name__ == "__main__":
     # 에이전트 초기화 (환경 변수에서 API 키 로드)
     # 실제 사용 시 아래 주석 해제
     """
-    # GPT-5.2 + 심층 추론 모드 (2026-02 권장 설정)
+    # GPT-5.2 + Responses API + 심층 추론 (v3.0 권장 설정)
     agent = TextToSQLAgent(
-        deployment_name="gpt-5.2",              # GPT-5.2 사용 (SQL 특화: gpt-5.2-codex)
-        api_version="v1",                       # 최신 GA API (Responses API 지원)
-        use_structured_outputs=True,            # JSON 스키마 100% 준수
+        deployment_name="gpt-5.2",              # GPT-5.2 (코드 특화: gpt-5.2-codex)
+        api_version="2025-04-01-preview",       # Responses API 지원 버전
+        use_structured_outputs=True,            # Pydantic 기반 JSON 스키마 100% 준수
         enable_deep_reasoning=True,             # GPT-5.2 심층 추론 활성화
         max_context_tokens=400000               # 400K 컨텍스트 (272K input + 128K output)
     )

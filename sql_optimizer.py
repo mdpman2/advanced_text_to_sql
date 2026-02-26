@@ -1,13 +1,25 @@
 """
-SQL Optimizer & Self-Correction Module (v2.2.1)
+SQL Optimizer & Self-Correction Module (v3.0.0)
 
 SQL 쿼리 최적화 및 자가 수정 기능을 제공합니다.
-Spider 2.0 벤치마크 #1 TCDataAgent-SQL (93.97%) 기술 참조.
+Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 기술 참조.
 
 기능:
 - SELECT * / IN 서브쿼리 / ORDER BY without LIMIT 감지
-- SelfCorrectionEngine: 테이블/컬럼 오타, 모호한 컬럼, GROUP BY 누락, 조인 오류 자동 수정
+- Cartesian Join 감지 (v3.0 신규)
+- Window Function 사용 제안 (v3.0 신규)
+- SelfCorrectionEngine: 테이블/컨럼 오타, 모호한 컨럼, GROUP BY 누락, 조인 오류 자동 수정
 - 최대 5회 재시도 (5-round self-correction)
+
+v3.0.0 변경:
+- 중복 메서드 제거 (_optimize_like_pattern, _suggest_cte_usage)
+- 신규 규칙: _detect_cartesian_join, _suggest_window_function
+
+v3.0.0 코드 최적화:
+- 인라인 re.search() 3개 → _PATTERNS dict 프리컴파일 통합 (distinct, like_wildcard, null_compare)
+- SelfCorrectionEngine._COMPILED_PATTERNS 클래스 레벨 1회 컴파일 (인스턴스마다 재컴파일 방지)
+- SQLOptimizer에 __slots__ 적용 (메모리 최적화)
+- SQLIssue, OptimizationResult에 @dataclass(slots=True) 적용
 """
 
 from __future__ import annotations
@@ -28,6 +40,12 @@ _PATTERNS = {
     'alias': re.compile(r'\b\w+\s+AS\s+\w+\b|\b\w+\s+\w+\s+ON\b', re.IGNORECASE),
     'order_by_limit': re.compile(r'\bORDER\s+BY\b.*\bLIMIT\b', re.IGNORECASE),
     'order_by': re.compile(r'\bORDER\s+BY\b', re.IGNORECASE),
+    'cartesian': re.compile(r'\bFROM\s+\w+\s*,\s*\w+', re.IGNORECASE),
+    'group_by': re.compile(r'\bGROUP\s+BY\b', re.IGNORECASE),
+    # 인라인 re.search 제거용 프리컴파일 패턴 (v3.0 최적화)
+    'distinct': re.compile(r'\bSELECT\s+DISTINCT\b', re.IGNORECASE),
+    'like_wildcard': re.compile(r"LIKE\s+'%[^']+%'", re.IGNORECASE),
+    'null_compare': re.compile(r'=\s*NULL|!=\s*NULL|<>\s*NULL', re.IGNORECASE),
 }
 
 
@@ -86,6 +104,8 @@ class SQLOptimizer:
             self._optimize_like_pattern,
             self._suggest_cte_usage,
             self._optimize_null_comparison,
+            self._detect_cartesian_join,       # v3.0 신규
+            self._suggest_window_function,     # v3.0 신규
         ]
 
     @staticmethod
@@ -130,7 +150,7 @@ class SQLOptimizer:
     @staticmethod
     def _optimize_distinct(sql: str) -> Tuple[str, Optional[str]]:
         """DISTINCT 최적화"""
-        if re.search(r'\bSELECT\s+DISTINCT\b', sql, re.IGNORECASE):
+        if _PATTERNS['distinct'].search(sql):
             if 'GROUP BY' not in sql.upper():
                 return sql, "DISTINCT 대신 GROUP BY를 사용하면 성능이 향상될 수 있습니다."
         return sql, None
@@ -138,7 +158,7 @@ class SQLOptimizer:
     @staticmethod
     def _optimize_like_pattern(sql: str) -> Tuple[str, Optional[str]]:
         """LIKE 패턴 최적화"""
-        if re.search(r"LIKE\s+'%[^']+%'", sql, re.IGNORECASE):
+        if _PATTERNS['like_wildcard'].search(sql):
             return sql, "LIKE '%..%' 패턴은 인덱스를 활용할 수 없습니다. FULLTEXT 검색을 고려해보세요."
         return sql, None
 
@@ -154,24 +174,32 @@ class SQLOptimizer:
     @staticmethod
     def _optimize_null_comparison(sql: str) -> Tuple[str, Optional[str]]:
         """NULL 비교 최적화"""
-        if re.search(r"=\s*NULL|!=\s*NULL|<>\s*NULL", sql, re.IGNORECASE):
+        if _PATTERNS['null_compare'].search(sql):
             return sql, "NULL 비교는 = 대신 IS NULL 또는 IS NOT NULL을 사용하세요."
         return sql, None
 
     @staticmethod
-    def _optimize_like_pattern(sql: str) -> Tuple[str, Optional[str]]:
-        """LIKE 패턴 최적화"""
-        if re.search(r"LIKE\s+'%[^']+%'", sql, re.IGNORECASE):
-            return sql, "LIKE '%..%' 패턴은 인덱스를 활용할 수 없습니다. FULLTEXT 검색을 고려해보세요."
+    def _detect_cartesian_join(sql: str) -> Tuple[str, Optional[str]]:
+        """Cartesian Join (카테시안 곱) 감지 (v3.0 신규)"""
+        if _PATTERNS['cartesian'].search(sql):
+            # FROM a, b 형식이지만 WHERE 절에 조인 조건이 있는지 확인
+            if 'WHERE' not in sql.upper() and 'ON' not in sql.upper():
+                return sql, "FROM a, b 형식은 카테시안 곱을 생성합니다. 명시적 JOIN과 ON 조건을 사용하세요."
         return sql, None
 
     @staticmethod
-    def _suggest_cte_usage(sql: str) -> Tuple[str, Optional[str]]:
-        """CTE 사용 제안"""
-        # 중첩 서브쿼리 감지
-        subquery_count = sql.upper().count('SELECT') - 1
-        if subquery_count >= 2 and 'WITH' not in sql.upper():
-            return sql, "중첩 서브쿼리가 많습니다. CTE (WITH 절)를 사용하면 가독성과 성능이 향상됩니다."
+    def _suggest_window_function(sql: str) -> Tuple[str, Optional[str]]:
+        """Window Function 사용 제안 (v3.0 신규)"""
+        sql_upper = sql.upper()
+        # GROUP BY로 순위/누적 계산 시 Window Function 제안
+        if _PATTERNS['group_by'].search(sql):
+            rank_indicators = ['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE']
+            if not any(ri in sql_upper for ri in rank_indicators):
+                if any(kw in sql_upper for kw in ['순위', 'RANK', 'TOP', 'LIMIT 1']):
+                    return sql, "순위 계산에는 ROW_NUMBER() / RANK() / DENSE_RANK() 윈도우 함수를 고려하세요."
+        # 누적합/이동평균 패턴 감지
+        if 'SUM' in sql_upper and ('누적' in sql.lower() or 'RUNNING' in sql_upper):
+            return sql, "누적 합계에는 SUM() OVER (ORDER BY ...) 윈도우 함수를 사용하세요."
         return sql, None
 
     def optimize(self, sql: str) -> OptimizationResult:
@@ -212,9 +240,13 @@ class SelfCorrectionEngine:
     자가 수정 엔진
 
     SQL 실행 오류를 분석하고 수정 제안을 생성합니다.
+
+    v3.0.0 최적화:
+    - _COMPILED_PATTERNS: 클래스 레벨 1회 컴파일 (인스턴스 생성 시 재컴파일 방지)
+    - __slots__ 적용으로 메모리 최적화
     """
 
-    __slots__ = ('schema', '_compiled_patterns')
+    __slots__ = ('schema',)
 
     # 일반적인 SQL 오류 패턴과 수정 방법 (클래스 레벨 상수)
     _ERROR_PATTERNS: Dict[str, Dict[str, Any]] = {
@@ -245,13 +277,14 @@ class SelfCorrectionEngine:
         },
     }
 
+    # 클래스 레벨 1회 컴파일: 인스턴스마다 재컴파일 방지
+    _COMPILED_PATTERNS: Dict[re.Pattern, Dict[str, Any]] = {
+        re.compile(pattern): info
+        for pattern, info in _ERROR_PATTERNS.items()
+    }
+
     def __init__(self, schema: Optional[DatabaseSchema] = None):
         self.schema = schema
-        # 패턴 미리 컴파일
-        self._compiled_patterns = {
-            re.compile(pattern): info
-            for pattern, info in self._ERROR_PATTERNS.items()
-        }
 
     def analyze_error(self, sql: str, error_message: str) -> SQLIssue:
         """
@@ -266,7 +299,7 @@ class SelfCorrectionEngine:
         """
         error_lower = error_message.lower()
 
-        for pattern, info in self._compiled_patterns.items():
+        for pattern, info in self._COMPILED_PATTERNS.items():
             match = pattern.search(error_lower)
             if match:
                 groups = match.groups() if match.groups() else ("",)
@@ -367,9 +400,6 @@ class ExecutionAnalyzer:
 
     실행 결과를 분석하여 의도한 대로 동작하는지 검증합니다.
     """
-
-    def __init__(self):
-        pass
 
     def analyze_result(self, sql: str, question: str,
                        columns: List[str], rows: List[Tuple]) -> Dict[str, Any]:

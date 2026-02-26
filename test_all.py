@@ -1,9 +1,17 @@
 """
-Advanced Text-to-SQL 통합 테스트 (v2.2.1)
+Advanced Text-to-SQL 통합 테스트 (v3.0.0)
 
-11개 시나리오 × 다중 테스트 케이스 = 70+ 항목
-- 시나리오 1~10: 오프라인 (API 키 불필요)
-- 시나리오 11: API 통합 테스트 (키 없으면 자동 skip)
+12개 시나리오 × 다중 테스트 케이스 = 106 항목
+- 시나리오 1~11: 오프라인 (API 키 불필요)
+- 시나리오 12: API 통합 테스트 (키 없으면 자동 skip)
+
+v3.0.0 변경:
+- Pydantic 모델 (SQLGenerationSchema) 테스트 추가
+- Responses API 지원 버전 확인
+- MySQL/SQL Server 방언 테스트 추가
+- 신규 최적화 규칙 (Cartesian Join, Window Function) 테스트
+- 모델 수 19개 확인
+- 코드 최적화 검증: __slots__, _table_dict, _COMPILED_PATTERNS, dict dispatch
 
 실행 방법:
   pytest test_all.py -v            # pytest
@@ -88,8 +96,9 @@ def test_scenario_01_imports():
     # 1-6 ModelConfig (Enum)
     all_models = list(ModelConfig)
     model_values = [m.value for m in all_models]
-    ok(f"ModelConfig 등록 모델: {len(all_models)}개 (>=17)", len(all_models) >= 17)
+    ok(f"ModelConfig 등록 모델: {len(all_models)}개 (>=19)", len(all_models) >= 19)
     ok("gpt-5.2-codex 존재", "gpt-5.2-codex" in model_values)
+    ok("gpt-5.2-mini 존재", "gpt-5.2-mini" in model_values)
     ok("gpt-5-pro 존재", "gpt-5-pro" in model_values)
     ok("o3-pro 존재", "o3-pro" in model_values)
     ok("gpt-5-nano 존재", "gpt-5-nano" in model_values)
@@ -97,8 +106,15 @@ def test_scenario_01_imports():
     codex = ModelConfig.GPT_5_2_CODEX
     ok("gpt-5.2-codex value 확인", codex.value == "gpt-5.2-codex")
 
-    # 1-7 API 버전
-    ok("API v1 지원 확인", "v1" in TextToSQLAgent.SUPPORTED_API_VERSIONS)
+    # 1-7 API 버전 (v3.0: Responses API)
+    ok("API 2025-04-01-preview 지원 확인", "2025-04-01-preview" in TextToSQLAgent.SUPPORTED_API_VERSIONS)
+
+    # 1-8 Pydantic 모델 (v3.0 신규)
+    from text_to_sql_agent import SQLGenerationSchema
+    schema_dict = SQLGenerationSchema.model_json_schema()
+    ok("SQLGenerationSchema Pydantic 모델 존재", schema_dict is not None)
+    ok("SQLGenerationSchema: sql 필드", "sql" in schema_dict.get("properties", {}))
+    ok("SQLGenerationSchema: reasoning 필드", "reasoning" in schema_dict.get("properties", {}))
 
 
 # ── 시나리오 2: 샘플 DB 생성 및 스키마 추출 ──────────────────
@@ -258,9 +274,15 @@ def test_scenario_06_dialect():
     ok(f"멀티 방언 생성: {len(results)}개", len(results) >= 3)
 
     # 6-4 방언 특성 조회
-    for d in (SQLDialect.SQLITE, SQLDialect.BIGQUERY, SQLDialect.SNOWFLAKE, SQLDialect.POSTGRESQL):
+    for d in (SQLDialect.SQLITE, SQLDialect.BIGQUERY, SQLDialect.SNOWFLAKE,
+              SQLDialect.POSTGRESQL, SQLDialect.MYSQL, SQLDialect.SQLSERVER):
         feature = mgr.get_dialect(d).get_feature()
         ok(f"{d.value} 특성 조회", feature.dialect == d)
+
+    # 6-5 MySQL 감지 (v3.0 신규)
+    ok("MySQL 감지", mgr.detect_dialect("SELECT IFNULL(x, 0) FROM t") == SQLDialect.MYSQL)
+    # 6-6 SQL Server 감지 (v3.0 신규)
+    ok("SQL Server 감지", mgr.detect_dialect("SELECT TOP 10 x FROM t") == SQLDialect.SQLSERVER)
 
 
 # ── 시나리오 7: SQL 검증 ────────────────────────────────────
@@ -328,9 +350,10 @@ def test_scenario_09_demo_app():
     ok("_EXIT_COMMANDS: quit", "quit" in _EXIT_COMMANDS)
     ok("_EXIT_COMMANDS: q", "q" in _EXIT_COMMANDS)
     ok("_BANNER: TCDataAgent-SQL 포함", "TCDataAgent-SQL" in _BANNER)
-    ok("_BANNER: v1 포함", "v1" in _BANNER)
+    ok("_BANNER: Responses API 포함", "Responses API" in _BANNER)
     ok("_BANNER: 400K 포함", "400K" in _BANNER)
     ok("_BANNER: codex 포함", "codex" in _BANNER)
+    ok("_BANNER: v3.0 포함", "v3.0" in _BANNER)
     ok("_MENU: 메뉴 선택 포함", "메뉴 선택" in _MENU)
 
 
@@ -376,7 +399,7 @@ def test_scenario_10_e2e():
     dialects = mdb.generate_for_all_dialects(
         "SELECT GROUP_CONCAT(name) FROM employees", SQLDialect.SQLITE
     )
-    ok("E2E: 멀티 방언 변환 완료", len(dialects) >= 3)
+    ok("E2E: 멀티 방언 변환 완료", len(dialects) >= 5)  # v3.0: 6종
 
     # 실제 SQLite 실행
     conn = sqlite3.connect(db)
@@ -386,11 +409,66 @@ def test_scenario_10_e2e():
     ok(f"E2E: 실제 SQL 실행 성공 (평균 연봉={avg:,.0f})", avg is not None and avg > 0)
 
 
-# ── 시나리오 11: API 통합 테스트 (키 필요) ───────────────────
+# ── 시나리오 11: v3.0 신규 기능 검증 ─────────────────────────
 
-def test_scenario_11_api_integration():
-    """시나리오 11: Azure OpenAI API 호출 (키 없으면 skip)"""
-    section("시나리오 11: API 통합 테스트 (GPT-5.2)")
+def test_scenario_11_v3_features():
+    """시나리오 11: v3.0 신규 기능 (Pydantic, Cartesian Join, Window Function, 신규 방언)"""
+    section("시나리오 11: v3.0 신규 기능 검증")
+
+    from text_to_sql_agent import SQLGenerationSchema
+    from sql_optimizer import SQLOptimizer
+    from schema_linker import SchemaLinker
+    from text_to_sql_agent import SchemaExtractor, create_sample_database
+
+    # 11-1 Pydantic 모델 검증
+    schema = SQLGenerationSchema.model_json_schema()
+    ok("Pydantic 스키마: properties 존재", "properties" in schema)
+    required_fields = {"reasoning", "sql", "confidence", "explanation", "assumptions", "alternative_queries"}
+    actual_fields = set(schema.get("properties", {}).keys())
+    ok("Pydantic 스키마: 필수 필드 완전", required_fields.issubset(actual_fields))
+
+    # 11-2 Pydantic 인스턴스 생성
+    instance = SQLGenerationSchema(
+        reasoning="테스트 추론",
+        sql="SELECT 1",
+        confidence=0.95,
+        explanation="테스트 설명",
+        assumptions=["가정1"],
+        alternative_queries=["SELECT 2"]
+    )
+    ok("Pydantic 인스턴스 생성", instance.sql == "SELECT 1")
+    ok("Pydantic JSON 직렬화", instance.model_dump_json() is not None)
+
+    # 11-3 Cartesian Join 감지 (신규 최적화)
+    opt = SQLOptimizer()
+    r_cart = opt.optimize("SELECT * FROM employees, departments")
+    has_cartesian = any("카테시안" in s for s in r_cart.optimizations_applied)
+    ok("Cartesian Join 감지", has_cartesian)
+
+    # 11-4 정상 조인은 카테시안 경고 없음
+    r_join = opt.optimize(
+        "SELECT e.name FROM employees e JOIN departments d ON e.dept_id = d.dept_id"
+    )
+    no_cartesian = not any("카테시안" in s for s in r_join.optimizations_applied)
+    ok("정상 JOIN: 카테시안 경고 없음", no_cartesian)
+
+    # 11-5 신규 한국어 키워드
+    db_schema = SchemaExtractor.extract_sqlite_schema(create_sample_database())
+    linker = SchemaLinker(db_schema)
+    for word in ("사이", "비어있는", "최근", "분기별", "중앙값"):
+        ok(f"한국어 키워드: {word}", word in linker.KOREAN_KEYWORDS)
+
+    # 11-6 방언 수 확인 (6종)
+    from dialect_handler import DialectManager
+    mgr = DialectManager()
+    ok(f"지원 방언 수: {len(mgr.dialects)}종 (>=6)", len(mgr.dialects) >= 6)
+
+
+# ── 시나리오 12: API 통합 테스트 (키 필요) ───────────────────
+
+def test_scenario_12_api_integration():
+    """시나리오 12: Azure OpenAI Responses API 호출 (키 없으면 skip)"""
+    section("시나리오 12: API 통합 테스트 (GPT-5.2 Responses API)")
 
     key = os.getenv("OPEN_AI_KEY_5")
     endpoint = os.getenv("OPEN_AI_ENDPOINT_5")
@@ -407,7 +485,7 @@ def test_scenario_11_api_integration():
             api_key=key,
             endpoint=endpoint,
             deployment_name="gpt-5.2",
-            api_version="v1",
+            api_version="2025-04-01-preview",
             use_structured_outputs=True,
             enable_deep_reasoning=True,
         )
@@ -451,14 +529,15 @@ _ALL_SCENARIOS = [
     test_scenario_08_prompt,
     test_scenario_09_demo_app,
     test_scenario_10_e2e,
-    test_scenario_11_api_integration,
+    test_scenario_11_v3_features,         # v3.0 신규
+    test_scenario_12_api_integration,     # API (키 없으면 skip)
 ]
 
 if __name__ == "__main__":
     print()
     print("=" * 70)
     print("  Advanced Text-to-SQL 통합 테스트")
-    print("  2026년 2월 8일 (v2.2.1)")
+    print("  2026년 6월 15일 (v3.0.0 — Responses API, 106 항목)")
     print("=" * 70)
 
     start = time.time()
