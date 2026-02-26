@@ -1,8 +1,8 @@
-# Advanced Text-to-SQL Agent v3.0.0 (2026-06 Edition)
+# Advanced Text-to-SQL Agent v3.0.0 (2026-02 Edition)
 
 Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + **Responses API** + Pydantic v2 Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
 
-## 🆕 v3.0.0 주요 업데이트 (2026-06-15)
+## 🆕 v3.0.0 주요 업데이트 (2026-02-27)
 
 | 항목 | v2.2.1 | **v3.0.0** | 효과 |
 |------|--------|-----------|------|
