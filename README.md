@@ -14,7 +14,7 @@ Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + **Responses API** + Pydantic v
 | **토큰 파라미터** | `max_completion_tokens` / `max_tokens` | **`max_output_tokens`** | 통일된 파라미터 |
 | **SQL 방언** | 4종 (SQLite, PG, BQ, Snowflake) | **6종 (+MySQL, SQL Server)** | 엔터프라이즈 DB 지원 |
 | **최적화 규칙** | 9개 (중복 2개 포함) | **11개 (중복 제거, 신규 2개)** | Cartesian Join + Window Function |
-| **모델** | 17종 | **19종 (+gpt-5.2-mini)** | 최신 모델 라인업 |
+| **모델** | 17종 | **16종 (추론 전용 모델 제거, GPT-5.2 네이티브 추론 통합)** | GPT-5.2가 추론 겸용 |
 | **Spider 2.0** | TCDataAgent-SQL 93.97% | **TCDataAgent-SQL 95.14%** | 2026-06 리더보드 최신화 |
 | **API 버전** | `v1` (가상) | **`2025-04-01-preview`** | 실제 Azure API 버전 |
 | **한국어 키워드** | 50+ | **55+** | 사이, 비어있는, 최근, 분기별 등 |
@@ -224,7 +224,7 @@ advanced_text_to_sql/
 ├── sql_optimizer.py       # SQL 최적화 11개 규칙 (프리컴파일 패턴 통합) + SelfCorrection
 ├── dialect_handler.py     # 멀티 DB 방언 6종 (dict dispatch 힌트, 프리컴파일 LIMIT 변환)
 ├── demo_app.py            # 데모 애플리케이션 (dispatch dict, Callable 타입 힌트)
-├── test_all.py            # 종합 테스트 (12 시나리오, 106 항목)
+├── test_all.py            # 종합 테스트 (12 시나리오, 105 항목)
 ├── requirements.txt       # 의존성 (openai>=1.93, pydantic>=2.10, httpx>=0.28)
 ├── sample_company.db      # 샘플 데이터베이스 (자동 생성)
 └── README.md              # 문서 (v3.0.0)
@@ -339,7 +339,7 @@ mssql_sql = manager.convert(
 
 ## 🔧 고급 설정
 
-### 모델 설정 (2026년 19종)
+### 모델 설정 (2026년 16종)
 
 ```python
 from text_to_sql_agent import TextToSQLAgent, ModelConfig
@@ -351,11 +351,10 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2")
 agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 
 # 사용 가능한 모델:
-# GPT-5.2: gpt-5.2, gpt-5.2-codex, gpt-5.2-mini
+# GPT-5.2: gpt-5.2, gpt-5.2-codex, gpt-5.2-mini  (네이티브 추론 내장)
 # GPT-5.1: gpt-5.1, gpt-5.1-codex, gpt-5.1-codex-max
 # GPT-5:   gpt-5, gpt-5-pro, gpt-5-codex, gpt-5-mini, gpt-5-nano
 # GPT-4.1: gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
-# 추론:    o3, o3-pro, o4-mini
 # Claude:  claude-opus-4-5, claude-sonnet-4-5
 ```
 
@@ -369,11 +368,11 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 | 4 | Ask Data + RKG (AT&T & RelationalAI) | 88.52% | 2026-02-15 |
 | 5 | ByteBrain-Agent v2 (ByteDance) | 86.74% | 2026-01-28 |
 
-## 🧪 테스트 커버리지 (106 항목)
+## 🧪 테스트 커버리지 (105 항목)
 
 | 시나리오 | 테스트 항목 | 항목 수 |
 |---------|-------------|---------|
-| 1. 모듈 임포트 | 전체 import, ModelConfig 19종, Pydantic 모델, API 버전 | 15 |
+| 1. 모듈 임포트 | 전체 import, ModelConfig 16종, Pydantic 모델, API 버전 | 14 |
 | 2. 스키마 추출 | DB 생성, 테이블/컬럼/FK/캐시/초기화 | 10 |
 | 3. 스키마 링킹 | 한국어 키워드, 퍼지/시맨틱 매칭, QueryDecomposer | 8 |
 | 4. SQL 최적화 | SELECT*, IN 서브쿼리, ORDER BY, 최적 쿼리 패스 | 4 |
@@ -385,7 +384,7 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 | 10. E2E 통합 | 전체 파이프라인 + SQLite 실행, 멀티 방언 | 7 |
 | **11. v3.0 신규** | **Pydantic 스키마/인스턴스, Cartesian Join, 신규 키워드 5개, 방언 6종** | **8** |
 | 12. API 통합 | Responses API 호출 (키 필요, 없으면 skip) | 4 |
-| | **합계** | **≥ 106** |
+| | **합계** | **≥ 105** |
 
 ## 🆚 경쟁 솔루션 비교
 

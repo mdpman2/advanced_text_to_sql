@@ -8,7 +8,7 @@ Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반
 4. Self-correction 및 검증 메커니즘 (5-round)
 5. Context-aware SQL 생성 (400K 토큰)
 
-지원 모델: GPT-5.2, gpt-5.2-codex (SQL 특화), o3-pro 등 19종
+지원 모델: GPT-5.2 (네이티브 추론 내장), gpt-5.2-codex (SQL 특화) 등 16종
 API: Responses API (2025-04-01-preview) + Structured Outputs (Pydantic v2)
 
 v3.0.0 주요 변경:
@@ -305,9 +305,9 @@ class SQLValidator:
 
 
 class ModelConfig(Enum):
-    """사용 가능한 모델 설정 (2026-06 최신)"""
-    # GPT-5.2 계열 (최신)
-    GPT_5_2 = "gpt-5.2"               # 최신 플래그십 (권장, 400K context)
+    """사용 가능한 모델 설정 (2026-06 최신, 16종)"""
+    # GPT-5.2 계열 (최신, 네이티브 추론 내장 — 별도 추론 모델 불필요)
+    GPT_5_2 = "gpt-5.2"               # 최신 플래그십 (권장, 400K context, 추론 겸용)
     GPT_5_2_CODEX = "gpt-5.2-codex"   # 코드/SQL 특화 (2026-01-14, Codex CLI 최적화)
     GPT_5_2_MINI = "gpt-5.2-mini"     # 경량 플래그십 (2026-05-14)
     # GPT-5.1 계열
@@ -324,10 +324,6 @@ class ModelConfig(Enum):
     GPT_4_1 = "gpt-4.1"               # 코딩 특화
     GPT_4_1_MINI = "gpt-4.1-mini"     # 빠른 응답
     GPT_4_1_NANO = "gpt-4.1-nano"     # 저비용
-    # 추론 모델
-    O3 = "o3"                         # 복잡한 추론
-    O3_PRO = "o3-pro"                 # 최고 추론 품질
-    O4_MINI = "o4-mini"               # 추론 + 효율성
     # Claude 계열 (Azure AI Foundry)
     CLAUDE_OPUS_4_5 = "claude-opus-4-5"     # Claude 최신
     CLAUDE_SONNET_4_5 = "claude-sonnet-4-5" # Claude 효율

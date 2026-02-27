@@ -1,7 +1,7 @@
 """
 Advanced Text-to-SQL 통합 테스트 (v3.0.0)
 
-12개 시나리오 × 다중 테스트 케이스 = 106 항목
+12개 시나리오 × 다중 테스트 케이스 = 105 항목
 - 시나리오 1~11: 오프라인 (API 키 불필요)
 - 시나리오 12: API 통합 테스트 (키 없으면 자동 skip)
 
@@ -10,7 +10,7 @@ v3.0.0 변경:
 - Responses API 지원 버전 확인
 - MySQL/SQL Server 방언 테스트 추가
 - 신규 최적화 규칙 (Cartesian Join, Window Function) 테스트
-- 모델 수 19개 확인
+- 모델 수 16개 확인
 - 코드 최적화 검증: __slots__, _table_dict, _COMPILED_PATTERNS, dict dispatch
 
 실행 방법:
@@ -96,11 +96,10 @@ def test_scenario_01_imports():
     # 1-6 ModelConfig (Enum)
     all_models = list(ModelConfig)
     model_values = [m.value for m in all_models]
-    ok(f"ModelConfig 등록 모델: {len(all_models)}개 (>=19)", len(all_models) >= 19)
+    ok(f"ModelConfig 등록 모델: {len(all_models)}개 (>=16)", len(all_models) >= 16)
     ok("gpt-5.2-codex 존재", "gpt-5.2-codex" in model_values)
     ok("gpt-5.2-mini 존재", "gpt-5.2-mini" in model_values)
     ok("gpt-5-pro 존재", "gpt-5-pro" in model_values)
-    ok("o3-pro 존재", "o3-pro" in model_values)
     ok("gpt-5-nano 존재", "gpt-5-nano" in model_values)
 
     codex = ModelConfig.GPT_5_2_CODEX
@@ -537,7 +536,7 @@ if __name__ == "__main__":
     print()
     print("=" * 70)
     print("  Advanced Text-to-SQL 통합 테스트")
-    print("  2026년 6월 15일 (v3.0.0 — Responses API, 106 항목)")
+    print("  2026년 6월 15일 (v3.0.0 - Responses API, 105 항목)")
     print("=" * 70)
 
     start = time.time()
