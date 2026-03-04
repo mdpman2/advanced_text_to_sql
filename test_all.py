@@ -1,9 +1,13 @@
 """
-Advanced Text-to-SQL 통합 테스트 (v3.0.0)
+Advanced Text-to-SQL 통합 테스트 (v3.1.3)
 
-12개 시나리오 × 다중 테스트 케이스 = 105 항목
+16개 시나리오 × 다중 테스트 케이스 (166+ 항목)
 - 시나리오 1~11: 오프라인 (API 키 불필요)
 - 시나리오 12: API 통합 테스트 (키 없으면 자동 skip)
+- 시나리오 13: v3.1 신규 (QueryGuard, 모호성, Mermaid)
+- 시나리오 14: v3.1.1 버그 수정 검증
+- 시나리오 15: v3.1.2 버그 수정 검증
+- 시나리오 16: v3.1.3 최적화 검증
 
 v3.0.0 변경:
 - Pydantic 모델 (SQLGenerationSchema) 테스트 추가
@@ -65,13 +69,14 @@ def test_scenario_01_imports():
     """시나리오 1: 전체 모듈 임포트 검증"""
     section("시나리오 1: 모듈 임포트 및 초기화")
 
-    # 1-1 text_to_sql_agent (11개)
+    # 1-1 text_to_sql_agent (12개)
     from text_to_sql_agent import (
         TextToSQLAgent, ConversationalSQLAgent, SchemaExtractor,
         PromptBuilder, SQLValidator, ModelConfig, SQLGenerationResult,
         DatabaseType, TableSchema, DatabaseSchema, create_sample_database,
+        DestructiveQueryError,
     )
-    ok("text_to_sql_agent 임포트 (11개)", True)
+    ok("text_to_sql_agent 임포트 (12개)", True)
 
     # 1-2 schema_linker (4개)
     from schema_linker import SchemaLinker, SchemaLink, SchemaLinkingResult, QueryDecomposer
@@ -283,6 +288,11 @@ def test_scenario_06_dialect():
     # 6-6 SQL Server 감지 (v3.0 신규)
     ok("SQL Server 감지", mgr.detect_dialect("SELECT TOP 10 x FROM t") == SQLDialect.SQLSERVER)
 
+    # 6-7 SQL Server LIMIT→TOP 변환 위치 검증 (v3.1 버그 수정)
+    ss_sql = mgr.convert("SELECT name FROM employees ORDER BY salary DESC LIMIT 5", SQLDialect.SQLITE, SQLDialect.SQLSERVER)
+    ok("SQL Server: TOP이 SELECT 뒤에 위치", "SELECT TOP 5" in ss_sql)
+    ok("SQL Server: LIMIT 제거됨", "LIMIT" not in ss_sql.upper())
+
 
 # ── 시나리오 7: SQL 검증 ────────────────────────────────────
 
@@ -352,7 +362,7 @@ def test_scenario_09_demo_app():
     ok("_BANNER: Responses API 포함", "Responses API" in _BANNER)
     ok("_BANNER: 400K 포함", "400K" in _BANNER)
     ok("_BANNER: codex 포함", "codex" in _BANNER)
-    ok("_BANNER: v3.0 포함", "v3.0" in _BANNER)
+    ok("_BANNER: v3.1 포함", "v3.1" in _BANNER)
     ok("_MENU: 메뉴 선택 포함", "메뉴 선택" in _MENU)
 
 
@@ -515,7 +525,264 @@ def test_scenario_12_api_integration():
         ok("API 통합 테스트", False, str(e))
 
 
-# ── 메인 ─────────────────────────────────────────────────────
+# ── 시나리오 13: v3.1 신규 기능 검증 (QueryGuard, 모호성 감지, Mermaid) ──
+
+def test_scenario_13_v31_features():
+    """시나리오 13: v3.1 신규 기능 (QueryGuard 통합, 모호성 감지, Mermaid ER)"""
+    section("시나리오 13: v3.1 신규 기능 검증")
+
+    from text_to_sql_agent import (
+        SchemaExtractor, create_sample_database, DestructiveQueryError, TextToSQLAgent,
+    )
+    from query_guard import QueryGuard, RiskLevel
+    from schema_linker import SchemaLinker
+
+    # 13-1 QueryGuard 기본 동작
+    guard = QueryGuard()
+    ok("QueryGuard: SELECT 안전", not guard.is_destructive("SELECT * FROM employees"))
+    ok("QueryGuard: DELETE 감지", guard.is_destructive("DELETE FROM employees"))
+    ok("QueryGuard: DROP 감지", guard.is_destructive("DROP TABLE employees"))
+    ok("QueryGuard: UPDATE 감지", guard.is_destructive("UPDATE employees SET salary = 0"))
+    ok("QueryGuard: TRUNCATE 감지", guard.is_destructive("TRUNCATE TABLE employees"))
+    ok("QueryGuard: INSERT 감지", guard.is_destructive("INSERT INTO employees VALUES (1, 'test')"))
+
+    # 13-2 QueryGuard 위험도 분석
+    a1 = guard.analyze("DELETE FROM employees")
+    ok("위험도: DELETE (no WHERE) = CRITICAL", a1.risk_level == RiskLevel.CRITICAL)
+
+    a2 = guard.analyze("DELETE FROM employees WHERE emp_id = 1")
+    ok("위험도: DELETE (with WHERE) = HIGH", a2.risk_level == RiskLevel.HIGH)
+
+    a3 = guard.analyze("INSERT INTO employees VALUES (1, 'test')")
+    ok("위험도: INSERT = MEDIUM", a3.risk_level == RiskLevel.MEDIUM)
+
+    a4 = guard.analyze("DROP TABLE employees")
+    ok("위험도: DROP = CRITICAL", a4.risk_level == RiskLevel.CRITICAL)
+
+    a5 = guard.analyze("SELECT * FROM employees")
+    ok("위험도: SELECT = SAFE", a5.risk_level == RiskLevel.SAFE)
+
+    # 13-3 DestructiveQueryError 예외 클래스
+    ok("DestructiveQueryError 임포트 확인", DestructiveQueryError is not None)
+    err = DestructiveQueryError("DELETE FROM employees", a1)
+    ok("DestructiveQueryError.sql 속성", err.sql == "DELETE FROM employees")
+    ok("DestructiveQueryError.analysis 속성", err.analysis is a1)
+
+    # 13-4 TextToSQLAgent __slots__ 확인
+    ok("__slots__: enable_safety_guard 존재", 'enable_safety_guard' in TextToSQLAgent.__slots__)
+    ok("__slots__: _guard 존재", '_guard' in TextToSQLAgent.__slots__)
+
+    # 13-5 SchemaLinker 모호성 감지
+    db_path = create_sample_database()
+    schema = SchemaExtractor.extract_sqlite_schema(db_path)
+    linker = SchemaLinker(schema)
+
+    amb1 = linker.detect_ambiguity("ㅇ")
+    ok("모호성: 짧은 질문 감지", amb1["is_ambiguous"])
+
+    amb2 = linker.detect_ambiguity("그것의 평균을 알려줘")
+    ok("모호성: 대명사 감지", amb2["is_ambiguous"])
+
+    amb3 = linker.detect_ambiguity("최근 매출 현황")
+    ok("모호성: 모호한 시간 감지", amb3["is_ambiguous"])
+
+    amb4 = linker.detect_ambiguity("개발팀 직원들의 평균 연봉을 알려주세요")
+    ok("모호성: 명확한 질문 통과", not amb4["is_ambiguous"])
+
+    # 13-5a _VAGUE_REFERENCES 정규식 거짓 양성 방지 (v3.1 버그 수정)
+    amb5 = linker.detect_ambiguity("이번 달 직원 목록")
+    ok("모호성: '이번 달' 거짓 양성 방지", not amb5["is_ambiguous"])
+
+    amb6 = linker.detect_ambiguity("이영희의 급여")
+    ok("모호성: '이영희' 거짓 양성 방지", not amb6["is_ambiguous"])
+
+    amb7 = linker.detect_ambiguity("평균 이상인 직원")
+    ok("모호성: '평균 이상' 거짓 양성 방지", not amb7["is_ambiguous"])
+
+    # 13-5b _link_cache 동작 검증
+    r1 = linker.link("개발팀 직원")
+    r2 = linker.link("개발팀 직원")
+    ok("스키마 링킹 캐시 동작 (동일 객체)", r1 is r2)
+
+    # 13-6 SchemaExtractor.to_mermaid
+    mermaid = SchemaExtractor.to_mermaid(schema)
+    ok("Mermaid ER: erDiagram 포함", "erDiagram" in mermaid)
+    ok("Mermaid ER: employees 포함", "employees" in mermaid)
+    ok("Mermaid ER: departments 포함", "departments" in mermaid)
+    ok("Mermaid ER: PK 마커 포함", "PK" in mermaid)
+    ok("Mermaid ER: FK 관계선 포함", "}o--||" in mermaid)
+
+    # 13-7 SchemaGraphBuilder.to_mermaid 위임 검증
+    from schema_graph import SchemaGraphBuilder
+    graph_mermaid = SchemaGraphBuilder.to_mermaid(schema)
+    ok("SchemaGraphBuilder.to_mermaid 위임 동작", graph_mermaid == mermaid)
+
+    # 13-8 DatabaseType MYSQL/SQLSERVER 추가 검증
+    from text_to_sql_agent import DatabaseType
+    ok("DatabaseType: MYSQL 존재", hasattr(DatabaseType, 'MYSQL'))
+    ok("DatabaseType: SQLSERVER 존재", hasattr(DatabaseType, 'SQLSERVER'))
+    ok("DatabaseType: 6종 이상", len(list(DatabaseType)) >= 6)
+
+    # 13-9 ConversationalSQLAgent.ask_with_history force 파라미터 검증
+    from text_to_sql_agent import ConversationalSQLAgent
+    import inspect
+    sig = inspect.signature(ConversationalSQLAgent.ask_with_history)
+    ok("ask_with_history: force 파라미터 존재", 'force' in sig.parameters)
+    ok("ask_with_history: force 기본값 False", sig.parameters['force'].default is False)
+
+
+# ── 시나리오 14: v3.1.1 버그 수정 검증 ──────────────────────
+
+def test_scenario_14_v311_fixes():
+    """시나리오 14: v3.1.1 버그 수정 검증 (3차 리뷰)"""
+    section("시나리오 14: v3.1.1 버그 수정 검증")
+
+    import inspect
+    from text_to_sql_agent import TextToSQLAgent, ConversationalSQLAgent, SQLValidator
+
+    # 14-1 confirm 엔드포인트 force=True 검증
+    from api_server import confirm_destructive_sql
+    source = inspect.getsource(confirm_destructive_sql)
+    ok("confirm 엔드포인트: force=True 포함", "force=True" in source)
+
+    # 14-2 ask_with_history에 SQLValidator 검증 로직 포함
+    awh_source = inspect.getsource(ConversationalSQLAgent.ask_with_history)
+    ok("ask_with_history: validate_syntax 호출", "validate_syntax" in awh_source)
+    ok("ask_with_history: validate_schema_references 호출", "validate_schema_references" in awh_source)
+    ok("ask_with_history: execute_and_validate 호출", "execute_and_validate" in awh_source)
+    ok("ask_with_history: 재시도 루프 존재", "max_retries" in awh_source)
+
+    # 14-3 demo_app _get_api_key 환경변수 일치
+    from demo_app import _get_api_key
+    get_api_source = inspect.getsource(_get_api_key)
+    ok("_get_api_key: OPEN_AI_KEY_5 확인", "OPEN_AI_KEY_5" in get_api_source)
+    ok("_get_api_key: AZURE_OPENAI_API_KEY 확인", "AZURE_OPENAI_API_KEY" in get_api_source)
+
+    # 14-4 ambiguity_detector ranking scope 실제 동작
+    from ambiguity_detector import AmbiguityDetector
+    detector = AmbiguityDetector()
+    # "가장" 단독으로는 기준 불명확 → 감지
+    r1 = detector._check_missing_ranking_scope("제일 직원")
+    ok("ranking scope: 기준 없는 질문 감지", r1.is_ambiguous)
+    # "가장 많은 예산을 가진 프로젝트" → 기준 명확 → 통과
+    r2 = detector._check_missing_ranking_scope("가장 많은 예산을 가진 프로젝트")
+    ok("ranking scope: 기준 있는 질문 통과", not r2.is_ambiguous)
+
+    # 14-5 TextToSQLAgent 클래스 독스트링 버전
+    ok("TextToSQLAgent docstring: v3.1.0", "v3.1.0" in (TextToSQLAgent.__doc__ or ""))
+
+    # 14-6 BigQuery _convert_strftime 단순화 검증
+    from dialect_handler import BigQueryDialect
+    bq = BigQueryDialect()
+    result = bq._convert_strftime.__wrapped__("%Y-%m-%d", "hire_date")
+    ok("BigQuery strftime: FORMAT_DATE 정확", result == "FORMAT_DATE('%Y-%m-%d', hire_date)")
+
+    # 14-7 sql_optimizer _suggest_window_function: 한국어 '순위' 제거 검증
+    from sql_optimizer import SQLOptimizer
+    opt = SQLOptimizer()
+    wf_source = inspect.getsource(opt._suggest_window_function)
+    ok("window_function: '순위' 한국어 키워드 제거", "'순위'" not in wf_source)
+
+
+# ── 시나리오 15: v3.1.2 버그 수정 검증 ──────────────────────
+
+def test_scenario_15_v312_fixes():
+    """시나리오 15: v3.1.2 버그 수정 검증 (4차 리뷰)"""
+    section("시나리오 15: v3.1.2 버그 수정 검증")
+
+    import inspect
+    from text_to_sql_agent import ConversationalSQLAgent, SQLGenerationResult
+
+    # 15-1 ask_with_history: 'parsed' in dir() 제거 → 루프 전 초기화
+    awh_source = inspect.getsource(ConversationalSQLAgent.ask_with_history)
+    ok("ask_with_history: 'parsed' in dir() 제거", "'parsed' in dir()" not in awh_source)
+    ok("ask_with_history: parsed 초기화 존재", "parsed: Dict[str, Any] = {}" in awh_source
+       or "parsed: Dict[str, Any]" in awh_source)
+
+    # 15-2 api_server 동기 엔드포인트 예외 처리
+    from api_server import query_database
+    qd_source = inspect.getsource(query_database)
+    ok("query_database: RuntimeError 예외 처리", "RuntimeError" in qd_source)
+    ok("query_database: SQL 생성 실패 메시지", "SQL 생성 실패" in qd_source)
+
+    # 15-3 schema_linker '컸럼' → '컬럼' 오타 수정
+    from schema_linker import SchemaLinker
+    da_source = inspect.getsource(SchemaLinker.detect_ambiguity)
+    ok("detect_ambiguity: '컸럼' 오타 제거", "컸럼" not in da_source)
+    ok("detect_ambiguity: '컬럼' 정확한 표기", "컬럼" in da_source)
+
+    # 15-4 query_history 데드코드 제거
+    ok("ConversationalSQLAgent: query_history 제거",
+       not hasattr(ConversationalSQLAgent, 'query_history')
+       or 'query_history' not in ConversationalSQLAgent.__slots__)
+    # clear_history에서도 제거 확인
+    ch_source = inspect.getsource(ConversationalSQLAgent.clear_history)
+    ok("clear_history: query_history.clear() 제거", "query_history" not in ch_source)
+
+    # 15-5 _suggest_window_function: 도달 불가 'RANK' 키워드 제거
+    from sql_optimizer import SQLOptimizer
+    wf_source = inspect.getsource(SQLOptimizer._suggest_window_function)
+    # 내부 키워드 리스트가 ['TOP', 'LIMIT 1']만 포함 ('RANK' 제거됨)
+    ok("window_function: 내부 키워드에서 'RANK' 제거",
+       "['TOP', 'LIMIT 1']" in wf_source)
+
+    # 15-6 ConversationalSQLAgent __slots__ 추가
+    ok("ConversationalSQLAgent: __slots__ 정의됨",
+       hasattr(ConversationalSQLAgent, '__slots__') and len(ConversationalSQLAgent.__slots__) > 0)
+    ok("ConversationalSQLAgent: conversation_history in __slots__",
+       'conversation_history' in ConversationalSQLAgent.__slots__)
+    ok("ConversationalSQLAgent: _last_response_id in __slots__",
+       '_last_response_id' in ConversationalSQLAgent.__slots__)
+
+
+# ── 시나리오 16: v3.1.3 최적화 검증 ─────────────────────────────
+
+def test_scenario_16_v313_optimizations():
+    """시나리오 16: v3.1.3 최적화 검증 (5차 리뷰)"""
+    section("시나리오 16: v3.1.3 최적화 검증")
+
+    import inspect
+
+    # 16-1 api_server: 방언 변환된 SQL을 SQLite에서 실행하는 버그 수정
+    from api_server import query_database
+    qd_source = inspect.getsource(query_database)
+    ok("query_database: sqlite_sql 변수 사용 (실행용 분리)",
+       "sqlite_sql" in qd_source)
+    ok("query_database: response_sql 변수 사용 (응답용 분리)",
+       "response_sql" in qd_source)
+    ok("query_database: execute_query에 sqlite_sql 전달",
+       "execute_query(sqlite_sql)" in qd_source)
+
+    # 16-2 ask_with_history: 빈 SQL 실행 방어
+    from text_to_sql_agent import ConversationalSQLAgent
+    awh_source = inspect.getsource(ConversationalSQLAgent.ask_with_history)
+    ok("ask_with_history: 빈 SQL 가드 (if not sql)",
+       "if not sql:" in awh_source)
+    ok("ask_with_history: 빈 SQL 시 confidence 0.0 반환",
+       '"confidence": 0.0' in awh_source)
+
+    # 16-3 _stream_sql_generation: dialect 파라미터 추가
+    from api_server import _stream_sql_generation
+    stream_sig = inspect.signature(_stream_sql_generation)
+    ok("스트리밍: dialect 파라미터 존재",
+       "dialect" in stream_sig.parameters)
+    stream_source = inspect.getsource(_stream_sql_generation)
+    ok("스트리밍: display_sql 변수 사용 (실행/응답 분리)",
+       "display_sql" in stream_source)
+
+    # 16-4 MCP: dialect 파라미터 사용
+    from mcp_server import MCPTextToSQLServer
+    mcp_qd_source = inspect.getsource(MCPTextToSQLServer._tool_query_database)
+    ok("MCP query_database: dialect 파라미터 사용",
+       "dialect" in mcp_qd_source and "DialectManager" in mcp_qd_source)
+
+    # 16-5 text_to_sql_agent.py 버전 독스트링 v3.1.3
+    import text_to_sql_agent as agent_mod
+    ok("text_to_sql_agent 독스트링: v3.1.3",
+       "v3.1.3" in (agent_mod.__doc__ or ""))
+
+
+# ── 메인 ─────────────────────────────────────────────────────────
 
 _ALL_SCENARIOS = [
     test_scenario_01_imports,
@@ -530,13 +797,17 @@ _ALL_SCENARIOS = [
     test_scenario_10_e2e,
     test_scenario_11_v3_features,         # v3.0 신규
     test_scenario_12_api_integration,     # API (키 없으면 skip)
+    test_scenario_13_v31_features,        # v3.1 신규
+    test_scenario_14_v311_fixes,          # v3.1.1 버그 수정
+    test_scenario_15_v312_fixes,          # v3.1.2 버그 수정
+    test_scenario_16_v313_optimizations,  # v3.1.3 최적화
 ]
 
 if __name__ == "__main__":
     print()
     print("=" * 70)
     print("  Advanced Text-to-SQL 통합 테스트")
-    print("  2026년 6월 15일 (v3.0.0 - Responses API, 105 항목)")
+    print("  2026년 6월 15일 (v3.1.3 - Responses API + QueryGuard)")
     print("=" * 70)
 
     start = time.time()

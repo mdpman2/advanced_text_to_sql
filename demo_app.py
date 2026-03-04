@@ -1,5 +1,5 @@
 """
-Advanced Text-to-SQL Demo Application (v3.0.0)
+Advanced Text-to-SQL Demo Application (v3.1.1)
 
 Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반의 Text-to-SQL 데모.
 GPT-5.2 / gpt-5.2-codex, Responses API (2025-04-01-preview), 400K context window 지원.
@@ -32,6 +32,7 @@ from text_to_sql_agent import (
     ConversationalSQLAgent,
     create_sample_database,
     SchemaExtractor,
+    DestructiveQueryError,
 )
 from schema_linker import SchemaLinker
 from sql_optimizer import SQLOptimizer
@@ -42,7 +43,7 @@ from dialect_handler import SQLDialect, MultiDatabaseQuery
 _BANNER = """
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║   🏆 Advanced Text-to-SQL Agent v3.0 (2026-06)                   ║
+║   🏆 Advanced Text-to-SQL Agent v3.1 (2026-06)                   ║
 ║   ───────────────────────────────────────────────────────────  ║
 ║   Spider 2.0 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반         ║
 ║   GPT-5.2 / gpt-5.2-codex · Responses API · 400K Context       ║
@@ -76,7 +77,7 @@ _MAX_DISPLAY_ROWS = 10
 
 def _get_api_key() -> str | None:
     """Azure OpenAI API 키 조회 (중복 호출 제거용)"""
-    return os.getenv("AZURE_OPENAI_API_KEY")
+    return os.getenv("OPEN_AI_KEY_5") or os.getenv("AZURE_OPENAI_API_KEY")
 
 
 def _print_query_result(result: dict[str, Any], *, max_rows: int = _MAX_DISPLAY_ROWS) -> None:
@@ -85,6 +86,13 @@ def _print_query_result(result: dict[str, Any], *, max_rows: int = _MAX_DISPLAY_
     print(f"\n💬 설명: {result['explanation']}")
     if 'confidence' in result:
         print(f"🎯 신뢰도: {result['confidence']:.1%}")
+    # 안전 가드: 파괴적 SQL 경고 (v3.1.0)
+    if 'safety_warning' in result:
+        warning = result['safety_warning']
+        print(f"\n⚠️ 안전 경고: {warning['warning_message']}")
+        if result.get('requires_confirmation'):
+            print("   🔒 이 SQL은 실행되지 않았습니다. 확인이 필요합니다.")
+            return
     if 'results' in result and result['results']:
         row_count = result['row_count']
         print(f"\n📊 결과 ({row_count}행):")

@@ -1,5 +1,5 @@
 """
-SQL Optimizer & Self-Correction Module (v3.0.0)
+SQL Optimizer & Self-Correction Module (v3.1.2)
 
 SQL 쿼리 최적화 및 자가 수정 기능을 제공합니다.
 Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 기술 참조.
@@ -195,7 +195,7 @@ class SQLOptimizer:
         if _PATTERNS['group_by'].search(sql):
             rank_indicators = ['ROW_NUMBER', 'RANK', 'DENSE_RANK', 'NTILE']
             if not any(ri in sql_upper for ri in rank_indicators):
-                if any(kw in sql_upper for kw in ['순위', 'RANK', 'TOP', 'LIMIT 1']):
+                if any(kw in sql_upper for kw in ['TOP', 'LIMIT 1']):
                     return sql, "순위 계산에는 ROW_NUMBER() / RANK() / DENSE_RANK() 윈도우 함수를 고려하세요."
         # 누적합/이동평균 패턴 감지
         if 'SUM' in sql_upper and ('누적' in sql.lower() or 'RUNNING' in sql_upper):

@@ -1,8 +1,25 @@
-# Advanced Text-to-SQL Agent v3.0.0 (2026-02 Edition)
+# Advanced Text-to-SQL Agent v3.1.3 (2026-06 Edition)
 
 Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + **Responses API** + Pydantic v2 Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
 
-## 🆕 v3.0.0 주요 업데이트 (2026-02-27)
+## 🆕 v3.1.0 주요 업데이트 (2026-06-15) — QueryWeaver 참조 기능 추가
+
+| 항목 | v3.0.0 | **v3.1.0** | 효과 |
+|------|--------|-----------|------|
+| **REST API** | ❌ CLI만 | **✅ FastAPI 서버** | HTTP 기반 프로그래밍 통합 |
+| **MCP Server** | ❌ | **✅ Model Context Protocol** | AI 에이전트 표준 연동 |
+| **Streaming** | ❌ | **✅ SSE (Server-Sent Events)** | 실시간 추론 과정 표시 |
+| **파괴적 SQL 확인** | ❌ | **✅ QueryGuard** | INSERT/UPDATE/DELETE 안전장치 |
+| **모호 질문 감지** | ❌ | **✅ AmbiguityDetector** | 후속 질문으로 정확도 향상 |
+| **그래프 시각화** | ❌ | **✅ SchemaGraphBuilder** | 테이블 관계 시각화 + Mermaid ER |
+
+### v3.1.1 ~ v3.1.3 버그 수정 및 최적화
+
+| 버전 | 주요 변경 내용 |
+|------|---------------|
+| **v3.1.1** | dialect_handler 변환 로직 보정, ambiguity_detector 감지 정확도 개선, demo_app 메뉴/배너 수정 |
+| **v3.1.2** | schema_linker 퍼지 매칭 임계값 조정, sql_optimizer Self-Correction 패턴 보정, text_to_sql_agent 스키마 캐시 무결성 강화 |
+| **v3.1.3** | api_server 방언 변환 SQL 실행 분리 (`sqlite_sql`/`response_sql`), ask_with_history 빈 SQL 실행 방어, MCP dialect 파라미터 실제 적용, 스트리밍 방언 변환 지원 |
 
 | 항목 | v2.2.1 | **v3.0.0** | 효과 |
 |------|--------|-----------|------|
@@ -215,19 +232,221 @@ SQL 실행 오류를 자동으로 분석하고 수정합니다 (최대 5회).
 
 ---
 
+## 🌐 v3.1 신규: REST API 서버 (QueryWeaver 참조)
+
+FastAPI 기반 REST API로 HTTP를 통해 Text-to-SQL 기능을 사용할 수 있습니다.
+
+### 서버 실행
+
+```bash
+# 기본 실행 (포트 5000)
+uvicorn api_server:app --host 0.0.0.0 --port 5000 --reload
+
+# 또는 직접 실행
+python api_server.py
+```
+
+### API 엔드포인트
+
+| 메서드 | 경로 | 설명 |
+|--------|------|------|
+| GET | `/health` | 헬스 체크 |
+| GET | `/databases` | 로드된 DB 목록 |
+| POST | `/databases` | DB 업로드/연결 |
+| GET | `/databases/{id}/schema` | 스키마 정보 |
+| GET | `/databases/{id}/graph` | 스키마 그래프 시각화 |
+| POST | `/databases/{id}/query` | Text-to-SQL 질의 (동기/스트리밍) |
+| POST | `/confirm/{id}` | 파괴적 SQL 실행 확인 |
+
+### 사용 예시
+
+```python
+import requests
+
+# Text-to-SQL 질의
+resp = requests.post(
+    "http://localhost:5000/databases/sample_company/query",
+    json={
+        "question": "부서별 직원 수를 보여줘",
+        "execute": True,
+        "stream": False,
+    }
+)
+print(resp.json())
+```
+
+```python
+# SSE 스트리밍 모드
+with requests.post(
+    "http://localhost:5000/databases/sample_company/query",
+    json={"question": "개발팀 평균 연봉", "stream": True},
+    stream=True
+) as r:
+    boundary = "|||TEXT2SQL_BOUNDARY|||"
+    buffer = ""
+    for chunk in r.iter_content(decode_unicode=True):
+        buffer += chunk
+        while boundary in buffer:
+            part, buffer = buffer.split(boundary, 1)
+            if part.strip():
+                print(json.loads(part))
+```
+
+### Swagger UI
+
+서버 실행 후 http://localhost:5000/docs 에서 Swagger UI로 API를 테스트할 수 있습니다.
+
+---
+
+## 🔌 v3.1 신규: MCP Server (Model Context Protocol)
+
+AI 에이전트가 데이터베이스를 탐색하고 자연어로 질의할 수 있는 MCP 표준 인터페이스입니다.
+
+### MCP Operations
+
+| 도구명 | 설명 |
+|--------|------|
+| `list_databases` | 사용 가능한 DB 목록 |
+| `connect_database` | DB 연결 |
+| `database_schema` | 스키마 조회 (그래프 포함) |
+| `query_database` | 자연어 Text-to-SQL 질의 |
+| `disconnect_database` | DB 연결 해제 |
+
+### mcp.json 설정
+
+```json
+{
+    "servers": {
+        "text2sql": {
+            "type": "http",
+            "url": "http://127.0.0.1:5000/mcp",
+            "headers": {
+                "Authorization": "Bearer your_token_here"
+            }
+        }
+    }
+}
+```
+
+### MCP 독립 실행
+
+```bash
+python mcp_server.py  # 포트 5001에서 실행
+```
+
+---
+
+## 🛡️ v3.1 신규: 파괴적 SQL 확인 (QueryGuard)
+
+INSERT/UPDATE/DELETE/DROP/TRUNCATE 등 파괴적 SQL을 자동 감지하고 사용자 확인을 요구합니다.
+
+```
+[파괴적 SQL 감지 플로우]
+  질문 → SQL 생성 → QueryGuard 분석 → 위험도 판정 → 확인 요청 → 실행/취소
+
+위험도:
+  🔴 CRITICAL  — DROP, TRUNCATE, WHERE 없는 DELETE/UPDATE
+  🟠 HIGH      — WHERE 있는 UPDATE/DELETE, ALTER
+  🟡 MEDIUM    — INSERT
+  🟢 SAFE      — SELECT (확인 불필요)
+```
+
+```python
+from query_guard import QueryGuard
+
+guard = QueryGuard()
+analysis = guard.analyze("DELETE FROM employees")
+# → RiskLevel.CRITICAL, "⚠️ WHERE 절 없음 — 전체 테이블 삭제"
+
+analysis = guard.analyze("UPDATE employees SET salary = 50000 WHERE dept_id = 1")
+# → RiskLevel.HIGH, "조건에 맞는 행 수정"
+```
+
+---
+
+## ❓ v3.1 신규: 모호 질문 감지 (AmbiguityDetector)
+
+모호하거나 불명확한 질문을 감지하고 구체적인 후속 질문을 자동 제안합니다.
+
+```python
+from ambiguity_detector import AmbiguityDetector
+from text_to_sql_agent import SchemaExtractor
+
+schema = SchemaExtractor.extract_sqlite_schema("sample_company.db")
+detector = AmbiguityDetector(schema)
+
+result = detector.detect("최근 매출은?")
+# → is_ambiguous=True
+# → suggestions=["구체적인 기간을 지정해주세요 (예: 최근 3개월)"]
+```
+
+**감지 유형:**
+| 유형 | 예시 | 후속 질문 |
+|------|------|----------|
+| 시간 범위 미지정 | "최근 매출" | "구체적인 기간을 지정해주세요" |
+| 다중 테이블 컬럼 | "salary 합계" | "어떤 테이블의 salary인가요?" |
+| 집계 대상 미지정 | "평균은?" | "어떤 값의 평균인가요?" |
+| 비교 기준 미지정 | "보다 높은 급여" | "비교 기준을 명시해주세요" |
+| 대명사 참조 | "그 부서의 정보" | "구체적 이름으로 대체해주세요" |
+| 너무 짧은 질문 | "직원?" | "좀 더 구체적으로 질문해주세요" |
+
+---
+
+## 🕸️ v3.1 신규: 스키마 그래프 시각화 (SchemaGraphBuilder)
+
+데이터베이스 스키마를 그래프(nodes + edges) 형태로 변환하여 시각화합니다.
+
+```python
+from schema_graph import SchemaGraphBuilder
+from text_to_sql_agent import SchemaExtractor
+
+schema = SchemaExtractor.extract_sqlite_schema("sample_company.db")
+
+# JSON 그래프 데이터 (D3.js, vis.js 호환)
+graph = SchemaGraphBuilder.build(schema)
+# → {"nodes": [...], "edges": [...], "metadata": {...}}
+
+# Mermaid ER 다이어그램
+mermaid = SchemaGraphBuilder.to_mermaid(schema)
+```
+
+**Mermaid 출력 예시:**
+
+```mermaid
+erDiagram
+    employees {
+        integer emp_id PK
+        text name
+        integer dept_id FK
+        real salary
+    }
+    departments {
+        integer dept_id PK
+        text dept_name
+    }
+    employees }o--|| departments : "dept_id"
+```
+
+---
+
 ## 📁 프로젝트 구조
 
 ```
 advanced_text_to_sql/
-├── text_to_sql_agent.py   # 핵심 에이전트 (Responses API · Pydantic v2 · __slots__ · _build_text_config DRY)
-├── schema_linker.py       # 스키마 링킹 (55+ 키워드, _table_dict O(1) 룩업)
-├── sql_optimizer.py       # SQL 최적화 11개 규칙 (프리컴파일 패턴 통합) + SelfCorrection
-├── dialect_handler.py     # 멀티 DB 방언 6종 (dict dispatch 힌트, 프리컴파일 LIMIT 변환)
-├── demo_app.py            # 데모 애플리케이션 (dispatch dict, Callable 타입 힌트)
-├── test_all.py            # 종합 테스트 (12 시나리오, 105 항목)
-├── requirements.txt       # 의존성 (openai>=1.93, pydantic>=2.10, httpx>=0.28)
+├── text_to_sql_agent.py   # 핵심 에이전트 v3.1.3 (Responses API · Pydantic v2 · 빈 SQL 방어 · __slots__)
+├── schema_linker.py       # 스키마 링킹 v3.1.2 (55+ 키워드, _table_dict O(1) 룩업)
+├── sql_optimizer.py       # SQL 최적화 v3.1.2 (11개 규칙, 프리컴파일 패턴) + SelfCorrection
+├── dialect_handler.py     # 멀티 DB 방언 v3.1.1 (6종, dict dispatch 힌트, 프리컴파일 LIMIT 변환)
+├── api_server.py          # REST API v3.1.3 (sqlite_sql/response_sql 분리, 스트리밍 방언 지원)
+├── mcp_server.py          # MCP Server v3.1.3 (dialect 파라미터 실제 적용, DialectManager 연동)
+├── query_guard.py         # 파괴적 SQL 감지 v3.1.0 (INSERT/UPDATE/DELETE 안전장치)
+├── ambiguity_detector.py  # 모호 질문 감지 v3.1.1 (후속 질문 생성)
+├── schema_graph.py        # 스키마 그래프 v3.1.0 (nodes/edges, Mermaid ER)
+├── demo_app.py            # 데모 애플리케이션 v3.1.1 (dispatch dict, Callable 타입 힌트)
+├── test_all.py            # 종합 테스트 v3.1.3 (16 시나리오, 175 항목)
+├── requirements.txt       # 의존성 (openai>=1.93, fastapi>=0.115, uvicorn>=0.34)
 ├── sample_company.db      # 샘플 데이터베이스 (자동 생성)
-└── README.md              # 문서 (v3.0.0)
+└── README.md              # 문서 (v3.1.3)
 ```
 
 ## 🚀 빠른 시작
@@ -368,7 +587,7 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 | 4 | Ask Data + RKG (AT&T & RelationalAI) | 88.52% | 2026-02-15 |
 | 5 | ByteBrain-Agent v2 (ByteDance) | 86.74% | 2026-01-28 |
 
-## 🧪 테스트 커버리지 (105 항목)
+## 🧪 테스트 커버리지 (175 항목)
 
 | 시나리오 | 테스트 항목 | 항목 수 |
 |---------|-------------|---------|
@@ -384,20 +603,30 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 | 10. E2E 통합 | 전체 파이프라인 + SQLite 실행, 멀티 방언 | 7 |
 | **11. v3.0 신규** | **Pydantic 스키마/인스턴스, Cartesian Join, 신규 키워드 5개, 방언 6종** | **8** |
 | 12. API 통합 | Responses API 호출 (키 필요, 없으면 skip) | 4 |
-| | **합계** | **≥ 105** |
+| **13. v3.1 신규** | **QueryGuard 위험도, 모호성 감지, Mermaid ER, MCP 모듈** | **19** |
+| **14. v3.1.1 수정** | **dialect_handler 변환 보정, demo_app 배너/메뉴, ambiguity 정확도** | **15** |
+| **15. v3.1.2 수정** | **schema_linker 임계값, sql_optimizer 패턴, 스키마 캐시 무결성** | **42** |
+| **16. v3.1.3 최적화** | **sqlite_sql/response_sql 분리, 빈 SQL 방어, 스트리밍 dialect, MCP dialect** | **9** |
+| | **합계** | **175** |
 
 ## 🆚 경쟁 솔루션 비교
 
-| 기능 | 본 솔루션 | 일반 LLM | 기존 NL2SQL |
-|------|----------|---------|-------------|
-| Spider 2.0 정확도 | **95.14%** | ~45% | ~50% |
-| Self-Correction | ✅ 5-round | ❌ | ❌ |
-| 멀티 DB 지원 | ✅ 6종 | ❌ | △ 1~2종 |
-| 한국어 최적화 | ✅ 55+ | △ | ❌ |
-| 스키마 링킹 | ✅ | ❌ | △ |
-| 대화형 컨텍스트 | ✅ previous_response_id | △ | ❌ |
-| 쿼리 최적화 제안 | ✅ 11개 규칙 | ❌ | ❌ |
-| Structured Outputs | ✅ Pydantic v2 | ❌ | ❌ |
+| 기능 | 본 솔루션 | QueryWeaver | 일반 LLM | 기존 NL2SQL |
+|------|----------|-------------|---------|-------------|
+| Spider 2.0 정확도 | **95.14%** | N/A | ~45% | ~50% |
+| REST API | ✅ FastAPI | ✅ FastAPI | ❌ | ❌ |
+| MCP Server | ✅ v3.1 | ✅ | ❌ | ❌ |
+| SSE Streaming | ✅ v3.1 | ✅ | ❌ | ❌ |
+| 파괴적 SQL 확인 | ✅ QueryGuard | ✅ | ❌ | ❌ |
+| 모호 질문 감지 | ✅ v3.1 | ✅ | ❌ | ❌ |
+| 스키마 그래프 | ✅ Mermaid ER | ✅ FalkorDB | ❌ | ❌ |
+| Self-Correction | ✅ 5-round | ✅ | ❌ | ❌ |
+| 멀티 DB 지원 | ✅ 6종 | ✅ | ❌ | △ 1~2종 |
+| 한국어 최적화 | ✅ 55+ | ❌ | △ | ❌ |
+| 스키마 링킹 | ✅ | ✅ Graph | ❌ | △ |
+| 대화형 컨텍스트 | ✅ previous_response_id | ✅ Memory TTL | △ | ❌ |
+| 쿼리 최적화 제안 | ✅ 11개 규칙 | ❌ | ❌ | ❌ |
+| Structured Outputs | ✅ Pydantic v2 | ❌ | ❌ | ❌ |
 
 ---
 
@@ -405,7 +634,11 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 
 | 날짜 | 버전 | 변경 내용 |
 |------|------|----------|
-| 2026-06-15 | **3.0.0** | **Responses API 마이그레이션, Pydantic v2, previous_response_id, MySQL/SQL Server, 코드 최적화 (DRY, __slots__, 프리컴파일, dict dispatch)** |
+| 2026-06-15 | **3.1.3** | **api_server 방언 변환 SQL 실행 분리 (sqlite_sql/response_sql), ask_with_history 빈 SQL 실행 방어, MCP dialect 파라미터 실제 적용, 스트리밍 방언 변환 지원, 테스트 시나리오 16 추가 (175항목)** |
+| 2026-06-15 | 3.1.2 | schema_linker 퍼지 매칭 임계값 조정, sql_optimizer Self-Correction 패턴 보정, text_to_sql_agent 스키마 캐시 무결성 강화, 테스트 시나리오 15 추가 |
+| 2026-06-15 | 3.1.1 | dialect_handler 변환 로직 보정, ambiguity_detector 감지 정확도 개선, demo_app 메뉴/배너 수정, 테스트 시나리오 14 추가 |
+| 2026-06-15 | 3.1.0 | QueryWeaver 참조 기능 추가: REST API (FastAPI), MCP Server, SSE 스트리밍, 파괴적 SQL 확인 (QueryGuard), 모호 질문 감지 (AmbiguityDetector), 스키마 그래프 시각화 (Mermaid ER) |
+| 2026-06-15 | 3.0.0 | Responses API 마이그레이션, Pydantic v2, previous_response_id, MySQL/SQL Server, 코드 최적화 (DRY, __slots__, 프리컴파일, dict dispatch) |
 | 2026-02-08 | 2.2.1 | README/주석 최신화, demo_app DRY 최적화 |
 | 2026-02-08 | 2.2.0 | API v1 업그레이드, gpt-5.2-codex, 400K context |
 | 2026-01-26 | 2.1.0 | GPT-5.2 내장 심층 추론, 종합 테스트 |
@@ -415,11 +648,14 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 
 ## 📚 참고 자료
 
+- [QueryWeaver (FalkorDB)](https://github.com/FalkorDB/QueryWeaver) — Graph-powered Text2SQL (v3.1 참조)
 - [Spider 2.0 벤치마크](https://spider2-sql.github.io/)
 - [Azure OpenAI Responses API](https://learn.microsoft.com/azure/ai-services/openai/how-to/responses)
 - [Azure OpenAI 모델 카탈로그](https://learn.microsoft.com/azure/ai-services/openai/concepts/models)
 - [Pydantic v2 Structured Outputs](https://learn.microsoft.com/azure/ai-services/openai/how-to/structured-outputs)
 - [OpenAI Responses API Reference](https://platform.openai.com/docs/api-reference/responses)
+- [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) — AI 에이전트 통합 프로토콜
+- [FastAPI Documentation](https://fastapi.tiangolo.com/) — REST API 프레임워크
 
 ## 📄 라이선스
 

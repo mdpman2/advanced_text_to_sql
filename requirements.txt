@@ -1,7 +1,12 @@
-# Core dependencies (v3.0.0 — 2026-06 최신)
+# Core dependencies (v3.1.0 — 2026-06 최신)
 openai>=1.93.0  # GPT-5.2, Responses API, Structured Outputs, previous_response_id
 pydantic>=2.10.0  # Structured Outputs용 Pydantic v2 BaseModel (v3.0 신규)
 httpx>=0.28.0  # OpenAI SDK HTTP 클라이언트 (v3.0 신규)
+
+# REST API & MCP Server (v3.1 신규 — QueryWeaver 참조)
+fastapi>=0.115.0  # REST API + MCP 서버 프레임워크
+uvicorn[standard]>=0.34.0  # ASGI 서버 (FastAPI 실행용)
+python-multipart>=0.0.18  # FastAPI 파일 업로드 지원
 
 # Optional: Anthropic Claude support
 # anthropic>=0.45.0  # Claude Opus 4.5, Sonnet 4.5 지원

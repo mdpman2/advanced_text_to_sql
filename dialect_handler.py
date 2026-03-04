@@ -1,5 +1,5 @@
 """
-Multi-Database SQL Dialect Handler (v3.0.0)
+Multi-Database SQL Dialect Handler (v3.1.1)
 
 BigQuery, Snowflake, PostgreSQL, MySQL, SQL Server, SQLite 등 다양한 SQL 방언을 지원합니다.
 Spider 2.0-Snow/Lite 벤치마크의 멀티 데이터베이스 환경 처리가 핵심입니다.
@@ -70,37 +70,32 @@ class DialectFeature:
 class DialectConverter(ABC):
     """SQL 방언 변환기 기본 클래스"""
 
-    @abstractmethod
-    def convert(self, sql: str, source_dialect: SQLDialect) -> str:
-        """SQL을 현재 방언으로 변환"""
-        pass
+    _feature: ClassVar[DialectFeature]  # 서브클래스에서 반드시 정의
 
     @abstractmethod
-    def get_feature(self) -> DialectFeature:
-        """방언 특성 반환"""
+    def convert(self, sql: str, source_dialect: SQLDialect) -> str:
+        """해당 방언으로 SQL 변환"""
         pass
+
+    def get_feature(self) -> DialectFeature:
+        """방언 특성 반환 (서브클래스의 _feature ClassVar 활용)"""
+        return self._feature
 
 
 class SQLiteDialect(DialectConverter):
     """SQLite 방언 처리기"""
 
-    # 클래스 레벨 캐싱된 feature 인스턴스
-    _feature: ClassVar[Optional[DialectFeature]] = None
-
-    def get_feature(self) -> DialectFeature:
-        if SQLiteDialect._feature is None:
-            SQLiteDialect._feature = DialectFeature(
-                dialect=SQLDialect.SQLITE,
-                supports_cte=True,
-                supports_window_functions=True,
-                supports_array_types=False,
-                supports_json_types=True,  # SQLite 3.9+
-                date_format="%Y-%m-%d",
-                string_concat_operator="||",
-                limit_syntax="LIMIT",
-                quote_char='"'
-            )
-        return SQLiteDialect._feature
+    _feature: ClassVar[DialectFeature] = DialectFeature(
+        dialect=SQLDialect.SQLITE,
+        supports_cte=True,
+        supports_window_functions=True,
+        supports_array_types=False,
+        supports_json_types=True,  # SQLite 3.9+
+        date_format="%Y-%m-%d",
+        string_concat_operator="||",
+        limit_syntax="LIMIT",
+        quote_char='"'
+    )
 
     def convert(self, sql: str, source_dialect: SQLDialect) -> str:
         if source_dialect == SQLDialect.SQLITE:
@@ -147,22 +142,17 @@ class SQLiteDialect(DialectConverter):
 class BigQueryDialect(DialectConverter):
     """BigQuery 방언 처리기"""
 
-    _feature: ClassVar[Optional[DialectFeature]] = None
-
-    def get_feature(self) -> DialectFeature:
-        if BigQueryDialect._feature is None:
-            BigQueryDialect._feature = DialectFeature(
-                dialect=SQLDialect.BIGQUERY,
-                supports_cte=True,
-                supports_window_functions=True,
-                supports_array_types=True,
-                supports_json_types=True,
-                date_format="%Y-%m-%d",
-                string_concat_operator="||",
-                limit_syntax="LIMIT",
-                quote_char='`'
-            )
-        return BigQueryDialect._feature
+    _feature: ClassVar[DialectFeature] = DialectFeature(
+        dialect=SQLDialect.BIGQUERY,
+        supports_cte=True,
+        supports_window_functions=True,
+        supports_array_types=True,
+        supports_json_types=True,
+        date_format="%Y-%m-%d",
+        string_concat_operator="||",
+        limit_syntax="LIMIT",
+        quote_char='`'
+    )
 
     def convert(self, sql: str, source_dialect: SQLDialect) -> str:
         if source_dialect == SQLDialect.BIGQUERY:
@@ -192,29 +182,24 @@ class BigQueryDialect(DialectConverter):
     @lru_cache(maxsize=32)
     def _convert_strftime(format_str: str, column: str) -> str:
         """SQLite strftime을 BigQuery FORMAT_DATE로 변환"""
-        bq_format = format_str.replace("%Y", "%Y").replace("%m", "%m").replace("%d", "%d")
-        return f"FORMAT_DATE('{bq_format}', {column})"
+        # strftime과 BigQuery FORMAT_DATE는 %Y, %m, %d를 동일하게 사용
+        return f"FORMAT_DATE('{format_str}', {column})"
 
 
 class SnowflakeDialect(DialectConverter):
     """Snowflake 방언 처리기"""
 
-    _feature: ClassVar[Optional[DialectFeature]] = None
-
-    def get_feature(self) -> DialectFeature:
-        if SnowflakeDialect._feature is None:
-            SnowflakeDialect._feature = DialectFeature(
-                dialect=SQLDialect.SNOWFLAKE,
-                supports_cte=True,
-                supports_window_functions=True,
-                supports_array_types=True,
-                supports_json_types=True,
-                date_format="%Y-%m-%d",
-                string_concat_operator="||",
-                limit_syntax="LIMIT",
-                quote_char='"'
-            )
-        return SnowflakeDialect._feature
+    _feature: ClassVar[DialectFeature] = DialectFeature(
+        dialect=SQLDialect.SNOWFLAKE,
+        supports_cte=True,
+        supports_window_functions=True,
+        supports_array_types=True,
+        supports_json_types=True,
+        date_format="%Y-%m-%d",
+        string_concat_operator="||",
+        limit_syntax="LIMIT",
+        quote_char='"'
+    )
 
     def convert(self, sql: str, source_dialect: SQLDialect) -> str:
         if source_dialect == SQLDialect.SNOWFLAKE:
@@ -233,22 +218,17 @@ class SnowflakeDialect(DialectConverter):
 class PostgreSQLDialect(DialectConverter):
     """PostgreSQL 방언 처리기"""
 
-    _feature: ClassVar[Optional[DialectFeature]] = None
-
-    def get_feature(self) -> DialectFeature:
-        if PostgreSQLDialect._feature is None:
-            PostgreSQLDialect._feature = DialectFeature(
-                dialect=SQLDialect.POSTGRESQL,
-                supports_cte=True,
-                supports_window_functions=True,
-                supports_array_types=True,
-                supports_json_types=True,
-                date_format="%Y-%m-%d",
-                string_concat_operator="||",
-                limit_syntax="LIMIT",
-                quote_char='"'
-            )
-        return PostgreSQLDialect._feature
+    _feature: ClassVar[DialectFeature] = DialectFeature(
+        dialect=SQLDialect.POSTGRESQL,
+        supports_cte=True,
+        supports_window_functions=True,
+        supports_array_types=True,
+        supports_json_types=True,
+        date_format="%Y-%m-%d",
+        string_concat_operator="||",
+        limit_syntax="LIMIT",
+        quote_char='"'
+    )
 
     def convert(self, sql: str, source_dialect: SQLDialect) -> str:
         if source_dialect == SQLDialect.POSTGRESQL:
@@ -267,22 +247,17 @@ class PostgreSQLDialect(DialectConverter):
 class MySQLDialect(DialectConverter):
     """MySQL 방언 처리기 (v3.0 신규)"""
 
-    _feature: ClassVar[Optional[DialectFeature]] = None
-
-    def get_feature(self) -> DialectFeature:
-        if MySQLDialect._feature is None:
-            MySQLDialect._feature = DialectFeature(
-                dialect=SQLDialect.MYSQL,
-                supports_cte=True,
-                supports_window_functions=True,
-                supports_array_types=False,
-                supports_json_types=True,
-                date_format="%Y-%m-%d",
-                string_concat_operator="CONCAT()",
-                limit_syntax="LIMIT",
-                quote_char='`'
-            )
-        return MySQLDialect._feature
+    _feature: ClassVar[DialectFeature] = DialectFeature(
+        dialect=SQLDialect.MYSQL,
+        supports_cte=True,
+        supports_window_functions=True,
+        supports_array_types=False,
+        supports_json_types=True,
+        date_format="%Y-%m-%d",
+        string_concat_operator="CONCAT()",
+        limit_syntax="LIMIT",
+        quote_char='`'
+    )
 
     def convert(self, sql: str, source_dialect: SQLDialect) -> str:
         if source_dialect == SQLDialect.MYSQL:
@@ -301,22 +276,17 @@ class MySQLDialect(DialectConverter):
 class SQLServerDialect(DialectConverter):
     """SQL Server 방언 처리기 (v3.0 신규)"""
 
-    _feature: ClassVar[Optional[DialectFeature]] = None
-
-    def get_feature(self) -> DialectFeature:
-        if SQLServerDialect._feature is None:
-            SQLServerDialect._feature = DialectFeature(
-                dialect=SQLDialect.SQLSERVER,
-                supports_cte=True,
-                supports_window_functions=True,
-                supports_array_types=False,
-                supports_json_types=True,
-                date_format="yyyy-MM-dd",
-                string_concat_operator="+",
-                limit_syntax="TOP / OFFSET-FETCH",
-                quote_char='['
-            )
-        return SQLServerDialect._feature
+    _feature: ClassVar[DialectFeature] = DialectFeature(
+        dialect=SQLDialect.SQLSERVER,
+        supports_cte=True,
+        supports_window_functions=True,
+        supports_array_types=False,
+        supports_json_types=True,
+        date_format="yyyy-MM-dd",
+        string_concat_operator="+",
+        limit_syntax="TOP / OFFSET-FETCH",
+        quote_char='['
+    )
 
     def convert(self, sql: str, source_dialect: SQLDialect) -> str:
         if source_dialect == SQLDialect.SQLSERVER:
@@ -328,8 +298,12 @@ class SQLServerDialect(DialectConverter):
         if source_dialect == SQLDialect.SQLITE:
             # GROUP_CONCAT -> STRING_AGG
             result = _DIALECT_PATTERNS['group_concat'].sub(r"STRING_AGG(\1, ',')", result)
-            # LIMIT -> TOP (프리컴파일 패턴 사용)
-            result = _DIALECT_PATTERNS['limit'].sub(r'TOP \1', result)
+            # LIMIT N -> SELECT TOP N (LIMIT 절 제거 후 SELECT 뒤에 TOP 삽입)
+            limit_match = _DIALECT_PATTERNS['limit'].search(result)
+            if limit_match:
+                n = limit_match.group(1)
+                result = _DIALECT_PATTERNS['limit'].sub('', result).strip()
+                result = re.sub(r'\bSELECT\b', f'SELECT TOP {n}', result, count=1, flags=re.IGNORECASE)
 
         return result
 

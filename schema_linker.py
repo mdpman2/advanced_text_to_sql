@@ -1,5 +1,5 @@
 """
-Schema Linker - 스키마 연결 및 관계 분석 모듈 (v3.0.0)
+Schema Linker - 스키마 연결 및 관계 분석 모듈 (v3.1.2)
 
 Spider 2.0 벤치마크 #1 TCDataAgent-SQL의 핵심 기술인 스키마 링킹을 구현합니다.
 자연어 질문에서 관련 테이블과 컬럼을 식별합니다.
@@ -36,6 +36,13 @@ _SUBQUERY_PATTERNS = tuple(re.compile(p) for p in [
     r".+별로.+하고.+",  # 다중 집계
     r".+[은는이가].+[보다보단]",  # 비교 구문
 ])
+
+# 모호성 감지 패턴 (v3.1.0 — ambiguity_detector 핵심 기능 통합)
+_VAGUE_TIME = re.compile(r'최근|지난\s*(?:며칠|몇\s*달|기간)', re.IGNORECASE)
+_SPECIFIC_TIME = re.compile(r'최근\s*\d+\s*(?:일|주|개월|달|년|분기)')
+_VAGUE_REFERENCES = re.compile(
+    r'그것|이것|저것|거기|여기|해당|(?:그|이|저)\s+(?:데이터|정보|값|결과)', re.IGNORECASE
+)
 
 
 @dataclass(slots=True)
@@ -161,7 +168,7 @@ class SchemaLinker:
 
     def __init__(self, schema: 'DatabaseSchema'):
         self.schema = schema
-        self._link_cache: Dict[str, SchemaLinkingResult] = {}
+        self._link_cache: Dict[str, SchemaLinkingResult] = {}  # link() 캐시
         self._entity_patterns_frozen: FrozenSet[Tuple[str, ...]] = frozenset()
         self._table_dict: Dict[str, 'TableSchema'] = {}  # O(1) 테이블 룩업
         self._build_index()
@@ -192,7 +199,7 @@ class SchemaLinker:
         """퍼지 매칭 점수 계산"""
         return SequenceMatcher(None, s1.lower(), s2.lower()).ratio()
 
-    def _find_table_mentions(self, question: str) -> List[SchemaLink]:
+    def _find_table_mentions(self, question: str, words: List[str]) -> List[SchemaLink]:
         """질문에서 테이블 언급 찾기"""
         links: List[SchemaLink] = []
         question_lower = question.lower()
@@ -226,8 +233,7 @@ class SchemaLinker:
                     found_tables.add(table_name)
                     break
 
-        # 퍼지 매칭 (미리 컴파일된 정규식 사용)
-        words = _WORD_PATTERN.findall(question)
+        # 퍼지 매칭
         for word in words:
             if len(word) < 2:
                 continue
@@ -248,14 +254,12 @@ class SchemaLinker:
         return links
 
     def _find_column_mentions(self, question: str,
-                             relevant_tables: Set[str]) -> List[SchemaLink]:
-        """질문에서 컬럼 언급 찾기"""
+                             relevant_tables: Set[str],
+                             words: List[str]) -> List[SchemaLink]:
+        """질문에서 컨럼 언급 찾기"""
         links: List[SchemaLink] = []
         question_lower = question.lower()
         found_columns: Set[Tuple[str, str]] = set()  # (table, column) 쌍
-
-        # 미리 컴파일된 정규식으로 단어 추출
-        words = _WORD_PATTERN.findall(question)
 
         # 관련 테이블의 컬럼에서 검색
         for table_name in relevant_tables:
@@ -299,7 +303,8 @@ class SchemaLinker:
 
     def _infer_joins(self, relevant_tables: Set[str]) -> List[Tuple[str, str, str, str]]:
         """관련 테이블 간의 조인 관계 추론"""
-        joins = []
+        seen: Set[Tuple[str, str, str, str]] = set()
+        joins: List[Tuple[str, str, str, str]] = []
         tables_list = list(relevant_tables)
 
         for i, table1 in enumerate(tables_list):
@@ -310,10 +315,10 @@ class SchemaLinker:
             # 외래키 기반 조인
             for fk in table1_schema.foreign_keys:
                 if fk["references_table"] in relevant_tables:
-                    joins.append((
-                        table1, fk["column"],
-                        fk["references_table"], fk["references_column"]
-                    ))
+                    item = (table1, fk["column"], fk["references_table"], fk["references_column"])
+                    if item not in seen:
+                        seen.add(item)
+                        joins.append(item)
 
             # 컬럼명 기반 조인 추론 (id 패턴)
             for col in table1_schema.columns:
@@ -326,9 +331,12 @@ class SchemaLinker:
                         table2_schema = self._table_dict.get(table2)
                         if table2_schema:
                             pk = table2_schema.primary_keys[0] if table2_schema.primary_keys else "id"
-                            joins.append((table1, col["name"], table2, pk))
+                            item = (table1, col["name"], table2, pk)
+                            if item not in seen:
+                                seen.add(item)
+                                joins.append(item)
 
-        return list(set(joins))  # 중복 제거
+        return joins
 
     def link(self, question: str) -> SchemaLinkingResult:
         """
@@ -340,16 +348,23 @@ class SchemaLinker:
         Returns:
             SchemaLinkingResult: 스키마 링킹 결과
         """
+        # 캐시 조회
+        if question in self._link_cache:
+            return self._link_cache[question]
+
+        # 단어 추출 (1회 — _find_table_mentions, _find_column_mentions에서 재사용)
+        words = _WORD_PATTERN.findall(question)
+
         # 테이블 언급 찾기
-        table_links = self._find_table_mentions(question)
+        table_links = self._find_table_mentions(question, words)
         relevant_tables = {link.table_name for link in table_links}
 
         # 테이블이 없으면 모든 테이블 고려
         if not relevant_tables:
             relevant_tables = {t.name for t in self.schema.tables}
 
-        # 컬럼 언급 찾기
-        column_links = self._find_column_mentions(question, relevant_tables)
+        # 컨럼 언급 찾기
+        column_links = self._find_column_mentions(question, relevant_tables, words)
 
         # 결과 구성
         all_links = table_links + column_links
@@ -362,12 +377,14 @@ class SchemaLinker:
         # 조인 관계 추론
         inferred_joins = self._infer_joins(relevant_tables) if len(relevant_tables) > 1 else []
 
-        return SchemaLinkingResult(
+        result = SchemaLinkingResult(
             links=all_links,
             relevant_tables=relevant_tables,
             relevant_columns=relevant_columns,
             inferred_joins=inferred_joins
         )
+        self._link_cache[question] = result
+        return result
 
     def get_focused_schema(self, question: str) -> str:
         """
@@ -406,6 +423,69 @@ class SchemaLinker:
                 lines.append(f"  {join[0]}.{join[1]} = {join[2]}.{join[3]}")
 
         return "\n".join(lines)
+
+    def detect_ambiguity(self, question: str) -> Dict[str, Any]:
+        """
+        질문의 모호성 감지 (v3.1.0 — ambiguity_detector 핵심 기능 통합)
+
+        3가지 고유 모호성 체크 + 컨텍스트 기반 컬럼 모호성:
+        1. 너무 짧은 질문 (5자 미만)
+        2. 대명사/불명확한 참조 (예: '그것', '해당')
+        3. 모호한 시간 참조 (예: '최근' → 기간 미지정)
+        4. 다중 테이블 컬럼 모호성 (기존 column_index 활용)
+
+        Returns:
+            {"is_ambiguous": bool, "reason": str|None, "suggestions": list[str]}
+        """
+        stripped = question.strip()
+
+        # 1. 너무 짧은 질문
+        if len(stripped) < 5:
+            return {
+                "is_ambiguous": True,
+                "reason": "질문이 너무 짧습니다.",
+                "suggestions": [
+                    "좀 더 구체적으로 질문해주세요.",
+                    "예: '부서별 직원 수를 보여주세요', '올해 매출 상위 10개 제품'",
+                ],
+            }
+
+        # 2. 대명사/불명확한 참조
+        if _VAGUE_REFERENCES.search(question):
+            return {
+                "is_ambiguous": True,
+                "reason": "불명확한 참조('그것', '이것', '해당' 등)가 포함되어 있습니다.",
+                "suggestions": [
+                    "구체적인 이름으로 대체해주세요.",
+                    "예: '그 부서' → '개발팀', '해당 프로젝트' → 'AI 챗봇 개발 프로젝트'",
+                ],
+            }
+
+        # 3. 모호한 시간 참조
+        if _VAGUE_TIME.search(question) and not _SPECIFIC_TIME.search(question):
+            return {
+                "is_ambiguous": True,
+                "reason": "시간 범위가 명확하지 않습니다.",
+                "suggestions": [
+                    "구체적인 기간을 지정해주세요. (예: 최근 3개월, 지난 1년)",
+                    "시작/종료 날짜를 명시해주세요. (예: 2025-01-01부터 2025-12-31까지)",
+                ],
+            }
+
+        # 4. 다중 테이블 컬럼 모호성 (기존 column_index 활용)
+        for col_name, entries in self.column_index.items():
+            if len(entries) > 1 and col_name in question.lower():
+                tables = [t for t, _ in entries]
+                return {
+                    "is_ambiguous": True,
+                    "reason": f"'{col_name}' 컬럼이 여러 테이블에 존재합니다: {', '.join(tables)}",
+                    "suggestions": [
+                        f"어떤 테이블의 '{col_name}'을(를) 의미하시나요?",
+                        *[f"  - {t}.{col_name}" for t in tables],
+                    ],
+                }
+
+        return {"is_ambiguous": False, "reason": None, "suggestions": []}
 
 
 class QueryDecomposer:

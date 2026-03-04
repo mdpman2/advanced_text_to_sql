@@ -1,4 +1,4 @@
-"""Advanced Text-to-SQL Agent (v3.0.0)
+"""Advanced Text-to-SQL Agent (v3.1.3)
 Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반
 
 핵심 기술:
@@ -23,6 +23,9 @@ v3.0.0 코드 최적화:
 - _build_text_config() DRY 헬퍼 추출 (Structured Outputs 텍스트 설정 중복 제거)
 - _JSON_PATTERN 클래스 레벨 프리컴파일 정규식
 - additionalProperties: false 스키마 보정 로직 추가 (Azure Responses API 필수)
+
+v3.1.3 변경:
+- ask_with_history() 빈 SQL 실행 방어 (전체 재시도 실패 시 confidence 0.0 반환)
 
 Author: Azure OpenAI Sample
 Date: 2026-06-15
@@ -57,6 +60,8 @@ class DatabaseType(Enum):
     POSTGRESQL = "postgresql"
     BIGQUERY = "bigquery"
     SNOWFLAKE = "snowflake"
+    MYSQL = "mysql"          # v3.1 신규
+    SQLSERVER = "sqlserver"  # v3.1 신규
 
 
 @dataclass
@@ -88,6 +93,27 @@ class SQLGenerationResult:
     execution_plan: Optional[str] = None
     alternative_queries: List[str] = field(default_factory=list)
     validation_passed: bool = False
+
+
+class DestructiveQueryError(Exception):
+    """파괴적 SQL 감지 시 발생하는 예외 (v3.1.0)
+
+    QueryGuard가 DELETE, DROP, TRUNCATE 등 파괴적 SQL을 감지하면
+    execute_query()에서 이 예외를 발생시킵니다.
+
+    Attributes:
+        sql: 감지된 SQL 문
+        analysis: DestructiveAnalysis 분석 결과
+    """
+
+    def __init__(self, sql: str, analysis: Any):
+        self.sql = sql
+        self.analysis = analysis
+        super().__init__(
+            analysis.warning_message
+            if hasattr(analysis, 'warning_message')
+            else str(analysis)
+        )
 
 
 class SchemaExtractor:
@@ -181,6 +207,44 @@ class SchemaExtractor:
             foreign_keys=foreign_keys,
             sample_data=sample_data
         )
+
+    @staticmethod
+    def to_mermaid(schema: DatabaseSchema) -> str:
+        """
+        Mermaid ER 다이어그램 코드 생성 (v3.1.0)
+
+        스키마를 Mermaid erDiagram 형식으로 변환합니다.
+
+        Returns:
+            str: Mermaid ER 다이어그램 문자열
+        """
+        lines = ["erDiagram"]
+
+        for table in schema.tables:
+            lines.append(f"    {table.name} {{")
+            for col in table.columns:
+                col_type = col.get("type", "string").lower()
+                markers = []
+                if col["name"] in table.primary_keys:
+                    markers.append("PK")
+                if any(fk["column"] == col["name"] for fk in table.foreign_keys):
+                    markers.append("FK")
+                marker_str = " " + " ".join(markers) if markers else ""
+                lines.append(f"        {col_type} {col['name']}{marker_str}")
+            lines.append("    }")
+
+        # 외래키 관계선
+        seen_relations: set = set()
+        for table in schema.tables:
+            for fk in table.foreign_keys:
+                relation_key = (table.name, fk["references_table"])
+                if relation_key not in seen_relations:
+                    seen_relations.add(relation_key)
+                    lines.append(
+                        f"    {table.name} }}o--|| {fk['references_table']} : \"{fk['column']}\""
+                    )
+
+        return "\n".join(lines)
 
 
 class PromptBuilder:
@@ -355,7 +419,7 @@ SQL_GENERATION_SCHEMA = {
 
 class TextToSQLAgent:
     """
-    Text-to-SQL 에이전트 (v3.0.0 — 2026-06 최신 기술 적용)
+    Text-to-SQL 에이전트 (v3.1.0 — 2026-06 최신 기술 적용)
 
     Spider 2.0 벤치마크 최신 기술 기반:
     - TCDataAgent-SQL Contextual Scaling Engine 참조 (#1, 95.14%)
@@ -382,6 +446,7 @@ class TextToSQLAgent:
         'use_claude', 'deployment_name', 'enable_deep_reasoning',
         'use_structured_outputs', 'max_context_tokens', '_db_path',
         'client', 'current_schema', 'db_connection',
+        'enable_safety_guard', '_guard',
     )
 
     # 컴파일된 정규식 패턴 (성능 최적화)
@@ -404,7 +469,8 @@ class TextToSQLAgent:
         use_structured_outputs: bool = True,
         max_context_tokens: int = 400000,
         use_claude: bool = False,
-        enable_deep_reasoning: bool = True
+        enable_deep_reasoning: bool = True,
+        enable_safety_guard: bool = True
     ):
         """
         Args:
@@ -416,6 +482,7 @@ class TextToSQLAgent:
             max_context_tokens: 최대 컨텍스트 토큰 수 (기본: 400K — 272K input + 128K output)
             use_claude: Claude 사용 여부
             enable_deep_reasoning: 복잡한 질문에 GPT-5.2 심층 추론 활성화 (기본: True)
+            enable_safety_guard: 파괴적 SQL 안전 가드 활성화 여부 (기본: True)
         """
         self.use_claude = use_claude
         self.deployment_name = deployment_name
@@ -423,6 +490,14 @@ class TextToSQLAgent:
         self.use_structured_outputs = use_structured_outputs
         self.max_context_tokens = max_context_tokens
         self._db_path: Optional[str] = None
+        self.enable_safety_guard = enable_safety_guard
+        self._guard = None
+        if enable_safety_guard:
+            try:
+                from query_guard import QueryGuard
+                self._guard = QueryGuard()
+            except ImportError:
+                logger.warning("query_guard 모듈을 찾을 수 없습니다. 안전 가드가 비활성화됩니다.")
 
         if use_claude:
             raise NotImplementedError("Claude 지원은 anthropic 패키지 설치 후 사용 가능합니다.")
@@ -438,9 +513,9 @@ class TextToSQLAgent:
         self.db_connection: Optional[sqlite3.Connection] = None
 
         logger.info(
-            f"TextToSQLAgent v3.0 초기화: model={deployment_name}, "
+            f"TextToSQLAgent v3.1 초기화: model={deployment_name}, "
             f"api_version={api_version}, structured_outputs={use_structured_outputs}, "
-            f"deep_reasoning={enable_deep_reasoning}, engine=Responses API"
+            f"deep_reasoning={enable_deep_reasoning}, safety_guard={enable_safety_guard}, engine=Responses API"
         )
 
     # ── DRY 헬퍼 (text_config 공통 생성 — _call_llm, _call_llm_with_history에서 재사용) ──
@@ -630,14 +705,18 @@ class TextToSQLAgent:
                     last_error = f"스키마 참조 오류: {error_msg}"
                     continue
 
-                # 실행 검증 (SQLite인 경우)
+                # 실행 검증 (SQLite인 경우, 파괴적 SQL은 실행 스킵)
                 validation_passed = False
                 if self.db_connection:
-                    is_valid, _, error_msg = SQLValidator.execute_and_validate(sql, self.db_connection)
-                    if not is_valid:
-                        last_error = f"실행 오류: {error_msg}"
-                        continue
-                    validation_passed = True
+                    if self._guard and self._guard.is_destructive(sql):
+                        validation_passed = True  # 파괴적 SQL은 실행 없이 검증 통과
+                        logger.info(f"파괴적 SQL 감지 — 실행 검증 스킵: {sql[:50]}...")
+                    else:
+                        is_valid, _, error_msg = SQLValidator.execute_and_validate(sql, self.db_connection)
+                        if not is_valid:
+                            last_error = f"실행 오류: {error_msg}"
+                            continue
+                        validation_passed = True
 
                 return SQLGenerationResult(
                     sql=sql,
@@ -653,10 +732,28 @@ class TextToSQLAgent:
 
         raise RuntimeError(f"SQL 생성 실패 (최대 재시도 횟수 초과): {last_error}")
 
-    def execute_query(self, sql: str) -> Tuple[List[str], List[Tuple]]:
-        """SQL 쿼리 실행"""
+    def execute_query(self, sql: str, *, force: bool = False) -> Tuple[List[str], List[Tuple]]:
+        """SQL 쿼리 실행
+
+        Args:
+            sql: 실행할 SQL 쿼리
+            force: True이면 파괴적 SQL도 확인 없이 실행
+
+        Raises:
+            DestructiveQueryError: 파괴적 SQL 감지 시 (force=False일 때)
+        """
         if not self.db_connection:
             raise ValueError("데이터베이스가 연결되지 않았습니다.")
+
+        # 안전 가드: 파괴적 SQL 감지
+        if self._guard and not force:
+            analysis = self._guard.analyze(sql)
+            if analysis.is_destructive:
+                logger.warning(
+                    f"파괴적 SQL 차단: {analysis.operation} on {analysis.target_table} "
+                    f"(risk={analysis.risk_level.value})"
+                )
+                raise DestructiveQueryError(sql, analysis)
 
         cursor = self.db_connection.cursor()
         cursor.execute(sql)
@@ -664,16 +761,29 @@ class TextToSQLAgent:
         results = cursor.fetchall()
         return columns, results
 
-    def ask(self, question: str, execute: bool = True) -> Dict[str, Any]:
+    @staticmethod
+    def _build_safety_warning(analysis: Any) -> Dict[str, Any]:
+        """QueryGuard 분석 결과를 safety_warning 딕셔너리로 변환 (DRY 헬퍼)"""
+        return {
+            "risk_level": analysis.risk_level.value,
+            "operation": analysis.operation,
+            "target_table": analysis.target_table,
+            "has_where_clause": analysis.has_where_clause,
+            "warning_message": analysis.warning_message,
+            "affected_scope": analysis.affected_scope,
+        }
+
+    def ask(self, question: str, execute: bool = True, force: bool = False) -> Dict[str, Any]:
         """
         자연어 질문에 대한 답변 (SQL 생성 및 실행)
 
         Args:
             question: 자연어 질문
             execute: SQL 실행 여부
+            force: True이면 파괴적 SQL도 확인 없이 실행
 
         Returns:
-            Dict: SQL, 설명, 결과 포함
+            Dict: SQL, 설명, 결과 포함. 파괴적 SQL 감지 시 safety_warning 포함.
         """
         result = self.generate_sql(question)
 
@@ -685,8 +795,17 @@ class TextToSQLAgent:
             "validation_passed": result.validation_passed
         }
 
+        # 안전 가드: 파괴적 SQL 사전 경고 (v3.1.0)
+        if self._guard:
+            analysis = self._guard.analyze(result.sql)
+            if analysis.is_destructive:
+                response["safety_warning"] = self._build_safety_warning(analysis)
+                if not force:
+                    response["requires_confirmation"] = True
+                    return response
+
         if execute and self.db_connection:
-            columns, rows = self.execute_query(result.sql)
+            columns, rows = self.execute_query(result.sql, force=force)
             response["columns"] = columns
             response["results"] = [dict(zip(columns, row)) for row in rows]
             response["row_count"] = len(rows)
@@ -703,10 +822,11 @@ class TextToSQLAgent:
 class ConversationalSQLAgent(TextToSQLAgent):
     """대화형 Text-to-SQL 에이전트 (Responses API previous_response_id 활용)"""
 
+    __slots__ = ('conversation_history', '_last_response_id')
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.conversation_history: List[Dict[str, str]] = []
-        self.query_history: List[SQLGenerationResult] = []
         self._last_response_id: Optional[str] = None  # v3.0: 멀티턴 체이닝
 
     def _call_llm_with_history(
@@ -736,10 +856,20 @@ class ConversationalSQLAgent(TextToSQLAgent):
         self._last_response_id = response.id  # 다음 턴을 위해 ID 저장
         return response.output_text or ""
 
-    def ask_with_history(self, question: str, execute: bool = True) -> Dict[str, Any]:
-        """대화 히스토리를 고려한 질문 처리 (previous_response_id 활용)"""
+    def ask_with_history(self, question: str, execute: bool = True, force: bool = False) -> Dict[str, Any]:
+        """대화 히스토리를 고려한 질문 처리 (previous_response_id 활용)
+
+        Args:
+            question: 자연어 질문
+            execute: SQL 실행 여부
+            force: True이면 파괴적 SQL도 확인 없이 실행
+        """
         if not self.current_schema:
             raise ValueError("데이터베이스가 로드되지 않았습니다.")
+
+        # 안전한 변수 초기화 (for/else 이후 참조 대비)
+        parsed: Dict[str, Any] = {}
+        sql = ""
 
         # 이전 대화 컨텍스트 구성 (첫 턴이거나 fallback용)
         history_context = None
@@ -753,11 +883,60 @@ class ConversationalSQLAgent(TextToSQLAgent):
         schema_context = PromptBuilder.build_schema_context(self.current_schema)
         user_prompt = PromptBuilder.build_user_prompt(question, schema_context, history_context)
 
-        # v3.0: previous_response_id를 활용한 멀티턴 호출
-        response = self._call_llm_with_history(PromptBuilder.SYSTEM_PROMPT, user_prompt)
-        parsed = self._parse_llm_response(response)
+        last_error: Optional[str] = None
+        max_retries = 3  # 대화 모드는 3회 재시도
 
-        sql = parsed.get("sql", "").strip()
+        for attempt in range(max_retries):
+            try:
+                current_prompt = user_prompt
+                if last_error:
+                    current_prompt += f"\n## 이전 시도 오류 (Attempt {attempt}):\n{last_error}\n위 오류를 분석하고 수정하여 다시 생성해주세요."
+
+                # v3.0: previous_response_id를 활용한 멀티턴 호출
+                response = self._call_llm_with_history(PromptBuilder.SYSTEM_PROMPT, current_prompt)
+                parsed = self._parse_llm_response(response)
+
+                sql = parsed.get("sql", "").strip()
+                if not sql:
+                    raise ValueError("SQL이 생성되지 않았습니다.")
+
+                # SQL 검증 (v3.1.1: generate_sql과 동일한 안전장치)
+                is_valid, error_msg = SQLValidator.validate_syntax(sql, self.current_schema.database_type)
+                if not is_valid:
+                    last_error = f"문법 오류: {error_msg}"
+                    continue
+
+                is_valid, error_msg = SQLValidator.validate_schema_references(sql, self.current_schema)
+                if not is_valid:
+                    last_error = f"스키마 참조 오류: {error_msg}"
+                    continue
+
+                # 실행 검증 (파괴적 SQL은 실행 스킵)
+                if self.db_connection:
+                    if self._guard and self._guard.is_destructive(sql):
+                        pass  # 파괴적 SQL은 실행 검증 스킵
+                    else:
+                        is_valid, _, error_msg = SQLValidator.execute_and_validate(sql, self.db_connection)
+                        if not is_valid:
+                            last_error = f"실행 오류: {error_msg}"
+                            continue
+
+                break  # 검증 통과
+            except Exception as e:
+                last_error = str(e)
+                logger.warning(f"ask_with_history 시도 {attempt + 1}/{max_retries} 실패: {last_error}")
+        else:
+            # 모든 재시도 실패 시 마지막 SQL이라도 반환
+            sql = parsed.get("sql", "").strip()
+
+        # 빈 SQL 방어: 전체 재시도 실패 시 실행 방지 (v3.1.3)
+        if not sql:
+            return {
+                "question": question,
+                "sql": "",
+                "explanation": f"SQL 생성 실패 (최대 {max_retries}회 재시도 초과)",
+                "confidence": 0.0,
+            }
 
         result = {
             "question": question,
@@ -766,8 +945,18 @@ class ConversationalSQLAgent(TextToSQLAgent):
             "confidence": float(parsed.get("confidence", 0.8))
         }
 
+        # 안전 가드: 파괴적 SQL 사전 경고 (v3.1.0)
+        if self._guard:
+            guard_analysis = self._guard.analyze(sql)
+            if guard_analysis.is_destructive:
+                result["safety_warning"] = self._build_safety_warning(guard_analysis)
+                if not force:
+                    result["requires_confirmation"] = True
+                    self.conversation_history.append({"question": question, "sql": sql})
+                    return result
+
         if execute and self.db_connection:
-            columns, rows = self.execute_query(sql)
+            columns, rows = self.execute_query(sql, force=force)
             result["columns"] = columns
             result["results"] = [dict(zip(columns, row)) for row in rows]
             result["row_count"] = len(rows)
@@ -783,7 +972,6 @@ class ConversationalSQLAgent(TextToSQLAgent):
     def clear_history(self):
         """대화 히스토리 및 응답 체인 초기화"""
         self.conversation_history.clear()
-        self.query_history.clear()
         self._last_response_id = None
 
 
