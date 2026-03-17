@@ -1,8 +1,8 @@
 """
-Advanced Text-to-SQL Demo Application (v3.1.1)
+Advanced Text-to-SQL Demo Application (v3.1.4)
 
 Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반의 Text-to-SQL 데모.
-GPT-5.2 / gpt-5.2-codex, Responses API (2025-04-01-preview), 400K context window 지원.
+GPT-5.4 기본값 / gpt-5.2-codex 호환, Responses API (2025-04-01-preview), 400K context window 지원.
 
 실행 방법:
     python demo_app.py
@@ -11,17 +11,21 @@ GPT-5.2 / gpt-5.2-codex, Responses API (2025-04-01-preview), 400K context window
     - AZURE_OPENAI_API_KEY / OPEN_AI_KEY_5: Azure OpenAI API 키
     - AZURE_OPENAI_ENDPOINT / OPEN_AI_ENDPOINT_5: Azure OpenAI 엔드포인트
 
-v3.0.0 변경:
+v3.1.4 반영 사항:
+    - GPT-5.4 기본값과 현재 Responses API 설명으로 배너/문구 정리
+    - OPEN_AI_* / AZURE_OPENAI_* 환경 변수 경로를 동일하게 안내
+
+기존 주요 변경 이력:
     - Responses API 마이그레이션 적용 (text_to_sql_agent v3.0)
     - MySQL/SQL Server 방언 변환 지원
-    - Spider 2.0 벤치마크 2026-06 최신화
+    - Spider 2.0 벤치마크 2026-03 기준 문서화
 
-v3.0.0 코드 최적화:
+코드 최적화:
     - 메뉴 분기 if/elif 7단 → dispatch dict O(1) 룩업
     - Callable[[], None] 타입 힐트 정확화
     - _print_query_result() DRY 헬퍼로 3곳 중복 출력 제거
     - _get_api_key() 헬퍼로 환경변수 조회 중복 제거
-"""""
+"""
 
 import os
 from typing import Any, Callable
@@ -43,10 +47,11 @@ from dialect_handler import SQLDialect, MultiDatabaseQuery
 _BANNER = """
 ╔══════════════════════════════════════════════════════════════════╗
 ║                                                                  ║
-║   🏆 Advanced Text-to-SQL Agent v3.1 (2026-06)                   ║
+║   🏆 Advanced Text-to-SQL Agent v3.1.4 (2026-03)                 ║
 ║   ───────────────────────────────────────────────────────────  ║
 ║   Spider 2.0 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반         ║
-║   GPT-5.2 / gpt-5.2-codex · Responses API · 400K Context       ║
+║   GPT-5.4 기본값 / gpt-5.2-codex 호환 · Responses API          ║
+║   400K Context                                                 ║
 ║                                                                  ║
 ║   Features:                                                      ║
 ║   • Responses API + Pydantic v2 Structured Outputs               ║

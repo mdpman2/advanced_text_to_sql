@@ -1,5 +1,5 @@
 """
-MCP (Model Context Protocol) Server for Text-to-SQL Agent (v3.1.3)
+MCP (Model Context Protocol) Server for Text-to-SQL Agent (v3.1.4)
 
 QueryWeaver 참조 MCP 서버 구현.
 AI 에이전트가 데이터베이스를 탐색하고 자연어로 질의할 수 있는 표준 MCP 인터페이스.
@@ -10,6 +10,9 @@ MCP Operations:
 - database_schema    → 데이터베이스 스키마 조회
 - query_database     → 자연어 Text-to-SQL 질의 (v3.1.3: dialect 파라미터 실제 적용)
 - disconnect_database → 데이터베이스 연결 해제
+
+v3.1.4 변경:
+- 서버 메타데이터/버전 표기를 REST API 및 README와 일치하도록 정리
 
 Usage:
     # FastAPI MCP 엔드포인트로 통합 (/mcp)
@@ -30,7 +33,7 @@ mcp.json client 설정 예시:
     }
 
 Author: Azure OpenAI Sample
-Date: 2026-06-15
+Date: 2026-03-17
 """
 
 from __future__ import annotations
@@ -184,7 +187,7 @@ class MCPTextToSQLServer:
                 },
                 "serverInfo": {
                     "name": "text2sql-mcp-server",
-                    "version": "3.1.0",
+                    "version": "3.1.4",
                     "description": "Advanced Text-to-SQL Agent — Spider 2.0 #1 기술 기반",
                 },
             },
@@ -265,7 +268,7 @@ class MCPTextToSQLServer:
         agent = None
         api_key = os.getenv("OPEN_AI_KEY_5") or os.getenv("AZURE_OPENAI_API_KEY")
         if api_key:
-            agent = TextToSQLAgent(deployment_name="gpt-5.2")
+            agent = TextToSQLAgent(deployment_name="gpt-5.4")
             agent.load_database(db_path)
 
         self._databases[db_name] = {
@@ -399,12 +402,12 @@ if __name__ == "__main__":
     import uvicorn
     from fastapi import FastAPI as FA
 
-    mcp_app = FA(title="Text-to-SQL MCP Server", version="3.1.0")
+    mcp_app = FA(title="Text-to-SQL MCP Server", version="3.1.4")
     mcp_router = create_mcp_router()
     mcp_app.include_router(mcp_router)
 
     print("=" * 60)
-    print("  Text-to-SQL MCP Server v3.1.0")
+    print("  Text-to-SQL MCP Server v3.1.4")
     print("  Endpoint: http://localhost:5001/mcp")
     print("=" * 60)
 

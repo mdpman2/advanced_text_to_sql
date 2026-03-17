@@ -1,21 +1,19 @@
-"""
-Multi-Database SQL Dialect Handler (v3.1.1)
+"""Multi-Database SQL Dialect Handler.
 
-BigQuery, Snowflake, PostgreSQL, MySQL, SQL Server, SQLite 등 다양한 SQL 방언을 지원합니다.
-Spider 2.0-Snow/Lite 벤치마크의 멀티 데이터베이스 환경 처리가 핵심입니다.
+SQLite 기준 SQL을 BigQuery, Snowflake, PostgreSQL, MySQL, SQL Server 등 다른 방언으로 변환하고,
+각 방언의 힌트와 기능 정보를 제공합니다.
 
-지원 변환:
-- SQLite ↔ BigQuery (GROUP_CONCAT ↔ ARRAY_AGG, strftime ↔ FORMAT_DATE)
-- SQLite ↔ Snowflake (GROUP_CONCAT ↔ LISTAGG, FLATTEN)
-- SQLite ↔ PostgreSQL (GROUP_CONCAT ↔ STRING_AGG, :: 타입캐스팅)
-- SQLite ↔ MySQL (GROUP_CONCAT ↔ GROUP_CONCAT, strftime ↔ DATE_FORMAT) — v3.0 신규
-- SQLite ↔ SQL Server (GROUP_CONCAT ↔ STRING_AGG, strftime ↔ FORMAT) — v3.0 신규
+현재 지원 범위:
+- SQLite ↔ BigQuery
+- SQLite ↔ Snowflake
+- SQLite ↔ PostgreSQL
+- SQLite ↔ MySQL
+- SQLite ↔ SQL Server
 
-v3.0.0 코드 최적화:
-- get_dialect_hints() if/elif 6단 분기 → _DIALECT_HINTS dict dispatch O(1) 룩업
-- LIMIT→TOP 변환용 정규식 프리컴파일 (_DIALECT_PATTERNS['limit'])
-- DialectFeature에 @dataclass(slots=True, frozen=True) 적용 (불변 객체 + 메모리 최적화)
-- 각 DialectConverter의 _feature 클래스 레벨 캐싱 (ClassVar)
+구현 메모:
+- 방언 힌트는 dict dispatch로 조회합니다.
+- 자주 쓰는 변환 패턴은 모듈 로딩 시점에 미리 컴파일합니다.
+- `DialectFeature`는 불변 dataclass로 유지합니다.
 """
 
 from __future__ import annotations

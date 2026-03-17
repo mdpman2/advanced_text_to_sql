@@ -1,8 +1,17 @@
-# Advanced Text-to-SQL Agent v3.1.3 (2026-06 Edition)
+# Advanced Text-to-SQL Agent v3.1.4 (2026-03 Refresh)
 
-Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + **Responses API** + Pydantic v2 Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
+Spider 2.0 벤치마크 최신 기술 + GPT-5.4 기본값 + **Responses API** + Pydantic v2 Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
 
-## 🆕 v3.1.0 주요 업데이트 (2026-06-15)
+## 🆕 v3.1.4 주요 업데이트 (2026-03-17)
+
+| 항목 | v3.1.3 | **v3.1.4** | 효과 |
+|------|--------|-----------|------|
+| **멀티턴 API 세션** | `session_id` 미사용 | **✅ ConversationalSQLAgent 연결** | 후속 질문 문맥 유지 |
+| **추가 지시사항** | 요청 필드만 존재 | **✅ SQL 생성 프롬프트 반영** | 비즈니스 규칙/필터 반영 |
+| **결과 행 제한** | 고정 100행 | **✅ `max_rows` 제어** | API 페이로드/응답량 제어 |
+| **헬스 체크** | 단순 상태만 반환 | **✅ 운영 메타데이터 포함** | 세션/에이전트 상태 확인 용이 |
+
+## 🆕 v3.1.0 주요 업데이트 (2026-03-14)
 
 | 항목 | v3.0.0 | **v3.1.0** | 효과 |
 |------|--------|-----------|------|
@@ -31,8 +40,8 @@ Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + **Responses API** + Pydantic v
 | **토큰 파라미터** | `max_completion_tokens` / `max_tokens` | **`max_output_tokens`** | 통일된 파라미터 |
 | **SQL 방언** | 4종 (SQLite, PG, BQ, Snowflake) | **6종 (+MySQL, SQL Server)** | 엔터프라이즈 DB 지원 |
 | **최적화 규칙** | 9개 (중복 2개 포함) | **11개 (중복 제거, 신규 2개)** | Cartesian Join + Window Function |
-| **모델** | 17종 | **16종 (추론 전용 모델 제거, GPT-5.2 네이티브 추론 통합)** | GPT-5.2가 추론 겸용 |
-| **Spider 2.0** | TCDataAgent-SQL 93.97% | **TCDataAgent-SQL 95.14%** | 2026-06 리더보드 최신화 |
+| **모델** | 17종 | **17종 (GPT-5.4 기본값 추가, GPT-5.2 호환 유지)** | GPT-5.4 기본, GPT-5.2 계열 호환 |
+| **Spider 2.0** | TCDataAgent-SQL 93.97% | **TCDataAgent-SQL 95.14%** | 2026-03 기준 리더보드 반영 |
 | **API 버전** | `v1` (가상) | **`2025-04-01-preview`** | 실제 Azure API 버전 |
 | **한국어 키워드** | 50+ | **55+** | 사이, 비어있는, 최근, 분기별 등 |
 
@@ -41,7 +50,7 @@ Spider 2.0 벤치마크 최신 기술 + GPT-5.2 + **Responses API** + Pydantic v
 ```python
 # ❌ v2.x (이전 방식)
 response = client.chat.completions.create(
-    model="gpt-5.2",
+    model="gpt-5.4",
     messages=[
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -53,7 +62,7 @@ result = response.choices[0].message.content
 
 # ✅ v3.0 (Responses API)
 response = client.responses.create(
-    model="gpt-5.2",
+    model="gpt-5.4",
     instructions=system_prompt,    # system → instructions
     input=user_prompt,             # user message → input
     text={"format": {"type": "json_schema", ...}},  # Structured Outputs
@@ -66,9 +75,9 @@ result = response.output_text      # 간결한 응답 접근
 
 ```python
 # v3.0: 서버 사이드 대화 체이닝
-response1 = client.responses.create(model="gpt-5.2", input="첫 번째 질문", ...)
+response1 = client.responses.create(model="gpt-5.4", input="첫 번째 질문", ...)
 response2 = client.responses.create(
-    model="gpt-5.2",
+    model="gpt-5.4",
     input="후속 질문",
     previous_response_id=response1.id,  # 자동 컨텍스트 유지
     ...
@@ -433,20 +442,20 @@ erDiagram
 
 ```
 advanced_text_to_sql/
-├── text_to_sql_agent.py   # 핵심 에이전트 v3.1.3 (Responses API · Pydantic v2 · 빈 SQL 방어 · __slots__)
+├── text_to_sql_agent.py   # 핵심 에이전트 v3.1.4 (Responses API · Pydantic v2 · additional_context · __slots__)
 ├── schema_linker.py       # 스키마 링킹 v3.1.2 (55+ 키워드, _table_dict O(1) 룩업)
 ├── sql_optimizer.py       # SQL 최적화 v3.1.2 (11개 규칙, 프리컴파일 패턴) + SelfCorrection
 ├── dialect_handler.py     # 멀티 DB 방언 v3.1.1 (6종, dict dispatch 힌트, 프리컴파일 LIMIT 변환)
-├── api_server.py          # REST API v3.1.3 (sqlite_sql/response_sql 분리, 스트리밍 방언 지원)
-├── mcp_server.py          # MCP Server v3.1.3 (dialect 파라미터 실제 적용, DialectManager 연동)
+├── api_server.py          # REST API v3.1.4 (세션 TTL 정리, /query/sync, 세션 종료 엔드포인트)
+├── mcp_server.py          # MCP Server v3.1.4 (버전 메타데이터 정합화, DialectManager 연동)
 ├── query_guard.py         # 파괴적 SQL 감지 v3.1.0 (INSERT/UPDATE/DELETE 안전장치)
 ├── ambiguity_detector.py  # 모호 질문 감지 v3.1.1 (후속 질문 생성)
 ├── schema_graph.py        # 스키마 그래프 v3.1.0 (nodes/edges, Mermaid ER)
-├── demo_app.py            # 데모 애플리케이션 v3.1.1 (dispatch dict, Callable 타입 힌트)
-├── test_all.py            # 종합 테스트 v3.1.3 (16 시나리오, 175 항목)
+├── demo_app.py            # 데모 애플리케이션 v3.1.4 (GPT-5.4 기본값, dispatch dict, 최신 배너/설명)
+├── test_all.py            # 종합 테스트 v3.1.4 (17 시나리오, 193 항목 검증)
 ├── requirements.txt       # 의존성 (openai>=1.93, fastapi>=0.115, uvicorn>=0.34)
-├── sample_company.db      # 샘플 데이터베이스 (자동 생성)
-└── README.md              # 문서 (v3.1.3)
+├── sample_company.db      # 샘플 데이터베이스 (테스트 시 자동 생성/갱신)
+└── README.md              # 문서 (v3.1.4)
 ```
 
 ## 🚀 빠른 시작
@@ -477,6 +486,8 @@ $env:OPEN_AI_ENDPOINT_5="https://your-resource.cognitiveservices.azure.com/"
 python test_all.py
 ```
 
+2026-03-17 최신 전체 실행 결과: `193 success / 0 fail / 0 skip`
+
 ### 4. 데모 실행
 
 ```bash
@@ -492,10 +503,10 @@ from text_to_sql_agent import TextToSQLAgent
 
 # v3.0 에이전트 초기화 (Responses API)
 agent = TextToSQLAgent(
-    deployment_name="gpt-5.2",                # SQL 특화: gpt-5.2-codex
+    deployment_name="gpt-5.4",                # SQL 특화: gpt-5.2-codex
     api_version="2025-04-01-preview",         # Responses API 지원 버전
     use_structured_outputs=True,              # Pydantic 기반 Structured Outputs
-    enable_deep_reasoning=True,               # GPT-5.2 심층 추론
+    enable_deep_reasoning=True,               # GPT-5.4 심층 추론
     max_context_tokens=400000                 # 400K 컨텍스트
 )
 
@@ -558,26 +569,27 @@ mssql_sql = manager.convert(
 
 ## 🔧 고급 설정
 
-### 모델 설정 (2026년 16종)
+### 모델 설정 (2026년 17종)
 
 ```python
 from text_to_sql_agent import TextToSQLAgent, ModelConfig
 
-# GPT-5.2 (권장)
-agent = TextToSQLAgent(deployment_name="gpt-5.2")
+# GPT-5.4 (권장)
+agent = TextToSQLAgent(deployment_name="gpt-5.4")
 
 # SQL 특화 모델
 agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 
 # 사용 가능한 모델:
-# GPT-5.2: gpt-5.2, gpt-5.2-codex, gpt-5.2-mini  (네이티브 추론 내장)
+# GPT-5.4: gpt-5.4  (기본 권장)
+# GPT-5.2: gpt-5.2, gpt-5.2-codex, gpt-5.2-mini  (호환 유지)
 # GPT-5.1: gpt-5.1, gpt-5.1-codex, gpt-5.1-codex-max
 # GPT-5:   gpt-5, gpt-5-pro, gpt-5-codex, gpt-5-mini, gpt-5-nano
 # GPT-4.1: gpt-4.1, gpt-4.1-mini, gpt-4.1-nano
 # Claude:  claude-opus-4-5, claude-sonnet-4-5
 ```
 
-## 📊 Spider 2.0 벤치마크 (2026-06 기준)
+## 📊 Spider 2.0 벤치마크 참고 지표
 
 | 순위 | 솔루션 | 점수 | 날짜 |
 |------|--------|------|------|
@@ -587,27 +599,28 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 | 4 | Ask Data + RKG (AT&T & RelationalAI) | 88.52% | 2026-02-15 |
 | 5 | ByteBrain-Agent v2 (ByteDance) | 86.74% | 2026-01-28 |
 
-## 🧪 테스트 커버리지 (175 항목)
+## 🧪 테스트 커버리지 (193 항목)
 
 | 시나리오 | 테스트 항목 | 항목 수 |
 |---------|-------------|---------|
-| 1. 모듈 임포트 | 전체 import, ModelConfig 16종, Pydantic 모델, API 버전 | 14 |
-| 2. 스키마 추출 | DB 생성, 테이블/컬럼/FK/캐시/초기화 | 10 |
-| 3. 스키마 링킹 | 한국어 키워드, 퍼지/시맨틱 매칭, QueryDecomposer | 8 |
+| 1. 모듈 임포트 | 전체 import, ModelConfig 17종, Pydantic 모델, API 버전 | 15 |
+| 2. 스키마 추출 | DB 생성, 테이블/컬럼/FK/캐시/초기화 | 12 |
+| 3. 스키마 링킹 | 한국어 키워드, 퍼지/시맨틱 매칭, QueryDecomposer | 12 |
 | 4. SQL 최적화 | SELECT*, IN 서브쿼리, ORDER BY, 최적 쿼리 패스 | 4 |
-| 5. 자가 수정 | 테이블/컬럼 오타, 모호한 컬럼, GROUP BY 누락 | 4 |
-| 6. 방언 처리 | 감지 5종, 변환, 멀티 6종, 특성 조회, MySQL/MSSQL | 10 |
+| 5. 자가 수정 | 테이블/컬럼 오타, 모호한 컬럼, GROUP BY 누락 | 5 |
+| 6. 방언 처리 | 감지 6종, 변환, 멀티 6종, 특성 조회, MySQL/MSSQL | 15 |
 | 7. SQL 검증 | SELECT/오타/빈SQL/JOIN/CTE 문법 | 5 |
 | 8. 프롬프트 | 스키마 컨텍스트 생성, 4테이블 포함 확인 | 5 |
-| 9. demo_app | 상수/배너 v3.0/메뉴/EXIT 명령어 | 11 |
-| 10. E2E 통합 | 전체 파이프라인 + SQLite 실행, 멀티 방언 | 7 |
-| **11. v3.0 신규** | **Pydantic 스키마/인스턴스, Cartesian Join, 신규 키워드 5개, 방언 6종** | **8** |
-| 12. API 통합 | Responses API 호출 (키 필요, 없으면 skip) | 4 |
-| **13. v3.1 신규** | **QueryGuard 위험도, 모호성 감지, Mermaid ER, MCP 모듈** | **19** |
-| **14. v3.1.1 수정** | **dialect_handler 변환 보정, demo_app 배너/메뉴, ambiguity 정확도** | **15** |
-| **15. v3.1.2 수정** | **schema_linker 임계값, sql_optimizer 패턴, 스키마 캐시 무결성** | **42** |
+| 9. demo_app | 상수/배너 v3.1.4/메뉴/EXIT 명령어 | 12 |
+| 10. E2E 통합 | 전체 파이프라인 + SQLite 실행, 멀티 방언 | 6 |
+| **11. v3.0 신규** | **Pydantic 스키마/인스턴스, Cartesian Join, 신규 키워드 5개, 방언 6종** | **12** |
+| 12. API 통합 | Responses API 호출 (GPT-5.4 기본 경로 검증) | 4 |
+| **13. v3.1 신규** | **QueryGuard 위험도, 모호성 감지, Mermaid ER, MCP 모듈** | **35** |
+| **14. v3.1.1 수정** | **dialect_handler 변환 보정, demo_app 배너/메뉴, ambiguity 정확도** | **12** |
+| **15. v3.1.2 수정** | **schema_linker 임계값, sql_optimizer 패턴, 스키마 캐시 무결성** | **12** |
 | **16. v3.1.3 최적화** | **sqlite_sql/response_sql 분리, 빈 SQL 방어, 스트리밍 dialect, MCP dialect** | **9** |
-| | **합계** | **175** |
+| **17. v3.1.4 API 운영 기능** | **세션 TTL 정리, /query/sync, 세션 종료, health 메타데이터 확장** | **18** |
+| | **합계** | **193** |
 
 ## 🆚 경쟁 솔루션 비교
 
@@ -634,11 +647,12 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 
 | 날짜 | 버전 | 변경 내용 |
 |------|------|----------|
-| 2026-06-15 | **3.1.3** | **api_server 방언 변환 SQL 실행 분리 (sqlite_sql/response_sql), ask_with_history 빈 SQL 실행 방어, MCP dialect 파라미터 실제 적용, 스트리밍 방언 변환 지원, 테스트 시나리오 16 추가 (175항목)** |
-| 2026-06-15 | 3.1.2 | schema_linker 퍼지 매칭 임계값 조정, sql_optimizer Self-Correction 패턴 보정, text_to_sql_agent 스키마 캐시 무결성 강화, 테스트 시나리오 15 추가 |
-| 2026-06-15 | 3.1.1 | dialect_handler 변환 로직 보정, ambiguity_detector 감지 정확도 개선, demo_app 메뉴/배너 수정, 테스트 시나리오 14 추가 |
-| 2026-06-15 | 3.1.0 | QueryWeaver 참조 기능 추가: REST API (FastAPI), MCP Server, SSE 스트리밍, 파괴적 SQL 확인 (QueryGuard), 모호 질문 감지 (AmbiguityDetector), 스키마 그래프 시각화 (Mermaid ER) |
-| 2026-06-15 | 3.0.0 | Responses API 마이그레이션, Pydantic v2, previous_response_id, MySQL/SQL Server, 코드 최적화 (DRY, __slots__, 프리컴파일, dict dispatch) |
+| 2026-03-17 | **3.1.4** | **세션 TTL 정리, /databases/{db_id}/query/sync 추가, DELETE /sessions/{db_id}/{session_id} 추가, README/MCP/테스트 버전 정합화, 테스트 시나리오 17 추가, 최신 전체 실행 193항목 검증** |
+| 2026-03-16 | **3.1.3** | **api_server 방언 변환 SQL 실행 분리 (sqlite_sql/response_sql), ask_with_history 빈 SQL 실행 방어, MCP dialect 파라미터 실제 적용, 스트리밍 방언 변환 지원, 테스트 시나리오 16 추가** |
+| 2026-03-15 | 3.1.2 | schema_linker 퍼지 매칭 임계값 조정, sql_optimizer Self-Correction 패턴 보정, text_to_sql_agent 스키마 캐시 무결성 강화, 테스트 시나리오 15 추가 |
+| 2026-03-15 | 3.1.1 | dialect_handler 변환 로직 보정, ambiguity_detector 감지 정확도 개선, demo_app 메뉴/배너 수정, 테스트 시나리오 14 추가 |
+| 2026-03-14 | 3.1.0 | QueryWeaver 참조 기능 추가: REST API (FastAPI), MCP Server, SSE 스트리밍, 파괴적 SQL 확인 (QueryGuard), 모호 질문 감지 (AmbiguityDetector), 스키마 그래프 시각화 (Mermaid ER) |
+| 2026-03-13 | 3.0.0 | Responses API 마이그레이션, Pydantic v2, previous_response_id, MySQL/SQL Server, 코드 최적화 (DRY, __slots__, 프리컴파일, dict dispatch) |
 | 2026-02-08 | 2.2.1 | README/주석 최신화, demo_app DRY 최적화 |
 | 2026-02-08 | 2.2.0 | API v1 업그레이드, gpt-5.2-codex, 400K context |
 | 2026-01-26 | 2.1.0 | GPT-5.2 내장 심층 추론, 종합 테스트 |

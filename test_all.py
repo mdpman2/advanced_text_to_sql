@@ -1,13 +1,15 @@
 """
-Advanced Text-to-SQL 통합 테스트 (v3.1.3)
+Advanced Text-to-SQL 통합 테스트 (v3.1.4)
 
-16개 시나리오 × 다중 테스트 케이스 (166+ 항목)
+17개 시나리오 × 다중 테스트 케이스
+- 2026-03-17 최신 전체 실행 결과: 193 success / 0 fail / 0 skip
 - 시나리오 1~11: 오프라인 (API 키 불필요)
-- 시나리오 12: API 통합 테스트 (키 없으면 자동 skip)
+- 시나리오 12: API 통합 테스트 (workspace .env 자동 로드, 환경 없으면 skip)
 - 시나리오 13: v3.1 신규 (QueryGuard, 모호성, Mermaid)
 - 시나리오 14: v3.1.1 버그 수정 검증
 - 시나리오 15: v3.1.2 버그 수정 검증
 - 시나리오 16: v3.1.3 최적화 검증
+- 시나리오 17: v3.1.4 API 운영 기능 검증
 
 v3.0.0 변경:
 - Pydantic 모델 (SQLGenerationSchema) 테스트 추가
@@ -25,10 +27,25 @@ v3.0.0 변경:
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-load_dotenv("../.env")
+
+
+def _load_test_env() -> None:
+    """테스트 실행 위치와 무관하게 루트/보조 .env를 순서대로 로드"""
+    workspace_root = Path(__file__).resolve().parent.parent
+    env_candidates = (
+        workspace_root / ".env",
+        workspace_root / "azure_korean_doc_framework1" / ".env",
+    )
+    for env_path in env_candidates:
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+
+
+_load_test_env()
 
 
 # ── 테스트 인프라 ─────────────────────────────────────────────
@@ -477,14 +494,15 @@ def test_scenario_11_v3_features():
 
 def test_scenario_12_api_integration():
     """시나리오 12: Azure OpenAI Responses API 호출 (키 없으면 skip)"""
-    section("시나리오 12: API 통합 테스트 (GPT-5.2 Responses API)")
+    section("시나리오 12: API 통합 테스트 (GPT-5.4 기본 Responses API)")
 
-    key = os.getenv("OPEN_AI_KEY_5")
-    endpoint = os.getenv("OPEN_AI_ENDPOINT_5")
+    key = os.getenv("OPEN_AI_KEY_5") or os.getenv("AZURE_OPENAI_API_KEY")
+    endpoint = os.getenv("OPEN_AI_ENDPOINT_5") or os.getenv("AZURE_OPENAI_ENDPOINT")
+    deployment_name = os.getenv("MODEL_DEPLOYMENT_GPT5_4") or "gpt-5.4"
 
     if not key or not endpoint:
         for name in ("에이전트 초기화", "단순 쿼리 생성", "복잡한 쿼리 생성", "조인 쿼리 생성"):
-            skip(name, "API 키 없음")
+            skip(name, "OPEN_AI_KEY_5 또는 OPEN_AI_ENDPOINT_5 없음")
         return
 
     from text_to_sql_agent import TextToSQLAgent, create_sample_database
@@ -493,7 +511,7 @@ def test_scenario_12_api_integration():
         agent = TextToSQLAgent(
             api_key=key,
             endpoint=endpoint,
-            deployment_name="gpt-5.2",
+            deployment_name=deployment_name,
             api_version="2025-04-01-preview",
             use_structured_outputs=True,
             enable_deep_reasoning=True,
@@ -669,7 +687,7 @@ def test_scenario_14_v311_fixes():
     ok("ranking scope: 기준 있는 질문 통과", not r2.is_ambiguous)
 
     # 14-5 TextToSQLAgent 클래스 독스트링 버전
-    ok("TextToSQLAgent docstring: v3.1.0", "v3.1.0" in (TextToSQLAgent.__doc__ or ""))
+    ok("TextToSQLAgent docstring: v3.1.4", "v3.1.4" in (TextToSQLAgent.__doc__ or ""))
 
     # 14-6 BigQuery _convert_strftime 단순화 검증
     from dialect_handler import BigQueryDialect
@@ -699,11 +717,11 @@ def test_scenario_15_v312_fixes():
     ok("ask_with_history: parsed 초기화 존재", "parsed: Dict[str, Any] = {}" in awh_source
        or "parsed: Dict[str, Any]" in awh_source)
 
-    # 15-2 api_server 동기 엔드포인트 예외 처리
-    from api_server import query_database
-    qd_source = inspect.getsource(query_database)
-    ok("query_database: RuntimeError 예외 처리", "RuntimeError" in qd_source)
-    ok("query_database: SQL 생성 실패 메시지", "SQL 생성 실패" in qd_source)
+    # 15-2 api_server 공통 실행 헬퍼 예외 처리
+    from api_server import _execute_query_request
+    qd_source = inspect.getsource(_execute_query_request)
+    ok("_execute_query_request: RuntimeError 예외 처리", "RuntimeError" in qd_source)
+    ok("_execute_query_request: SQL 생성 실패 메시지", "SQL 생성 실패" in qd_source)
 
     # 15-3 schema_linker '컸럼' → '컬럼' 오타 수정
     from schema_linker import SchemaLinker
@@ -744,13 +762,13 @@ def test_scenario_16_v313_optimizations():
     import inspect
 
     # 16-1 api_server: 방언 변환된 SQL을 SQLite에서 실행하는 버그 수정
-    from api_server import query_database
-    qd_source = inspect.getsource(query_database)
-    ok("query_database: sqlite_sql 변수 사용 (실행용 분리)",
+    from api_server import _execute_query_request
+    qd_source = inspect.getsource(_execute_query_request)
+    ok("_execute_query_request: sqlite_sql 변수 사용 (실행용 분리)",
        "sqlite_sql" in qd_source)
-    ok("query_database: response_sql 변수 사용 (응답용 분리)",
+    ok("_execute_query_request: response_sql 변수 사용 (응답용 분리)",
        "response_sql" in qd_source)
-    ok("query_database: execute_query에 sqlite_sql 전달",
+    ok("_execute_query_request: execute_query에 sqlite_sql 전달",
        "execute_query(sqlite_sql)" in qd_source)
 
     # 16-2 ask_with_history: 빈 SQL 실행 방어
@@ -776,10 +794,73 @@ def test_scenario_16_v313_optimizations():
     ok("MCP query_database: dialect 파라미터 사용",
        "dialect" in mcp_qd_source and "DialectManager" in mcp_qd_source)
 
-    # 16-5 text_to_sql_agent.py 버전 독스트링 v3.1.3
+    # 16-5 text_to_sql_agent.py 버전 독스트링 v3.1.4
     import text_to_sql_agent as agent_mod
-    ok("text_to_sql_agent 독스트링: v3.1.3",
-       "v3.1.3" in (agent_mod.__doc__ or ""))
+    ok("text_to_sql_agent 독스트링: v3.1.4",
+       "v3.1.4" in (agent_mod.__doc__ or ""))
+
+
+# ── 시나리오 17: v3.1.4 API 운영 기능 검증 ─────────────────────────
+
+def test_scenario_17_v314_api_features():
+    """시나리오 17: v3.1.4 API 운영 기능 검증"""
+    section("시나리오 17: v3.1.4 API 운영 기능 검증")
+
+    import inspect
+
+    from api_server import (
+        QueryRequest,
+        _resolve_agent,
+        _execute_query_request,
+        health_check,
+        query_database,
+        query_database_sync,
+        _stream_sql_generation,
+        close_session,
+    )
+    from text_to_sql_agent import TextToSQLAgent, ConversationalSQLAgent
+
+    # 17-1 QueryRequest에 max_rows 추가
+    req = QueryRequest(question="테스트", max_rows=25)
+    ok("QueryRequest: max_rows 필드 존재", hasattr(req, 'max_rows'))
+    ok("QueryRequest: max_rows 값 반영", req.max_rows == 25)
+
+    # 17-2 공통 실행 헬퍼가 instructions를 additional_context로 전달
+    exec_source = inspect.getsource(_execute_query_request)
+    ok("_execute_query_request: additional_context 생성", "additional_context = request.instructions.strip()" in exec_source)
+    ok("_execute_query_request: ask_with_history additional_context 전달", "ask_with_history(request.question, execute=False, additional_context=additional_context)" in exec_source)
+    ok("_execute_query_request: ask additional_context 전달", "ask(request.question, execute=False, additional_context=additional_context)" in exec_source)
+
+    # 17-3 세션 기반 대화형 에이전트 해석기 추가
+    resolve_source = inspect.getsource(_resolve_agent)
+    ok("_resolve_agent: session_id 분기 존재", "if session_id:" in resolve_source)
+    ok("_resolve_agent: _get_or_create_conversation_agent 호출", "_get_or_create_conversation_agent" in resolve_source)
+
+    # 17-4 ask / ask_with_history 시그니처 확장
+    ask_sig = inspect.signature(TextToSQLAgent.ask)
+    awh_sig = inspect.signature(ConversationalSQLAgent.ask_with_history)
+    ok("TextToSQLAgent.ask: additional_context 파라미터", "additional_context" in ask_sig.parameters)
+    ok("ConversationalSQLAgent.ask_with_history: additional_context 파라미터", "additional_context" in awh_sig.parameters)
+
+    # 17-5 스트리밍도 동일 기능 지원
+    stream_sig = inspect.signature(_stream_sql_generation)
+    stream_source = inspect.getsource(_stream_sql_generation)
+    ok("스트리밍: additional_context 파라미터 존재", "additional_context" in stream_sig.parameters)
+    ok("스트리밍: max_rows 파라미터 존재", "max_rows" in stream_sig.parameters)
+    ok("스트리밍: max_rows 슬라이싱 적용", "results[:max_rows]" in stream_source)
+
+    # 17-6 sync 엔드포인트 및 세션 종료 엔드포인트 추가
+    sync_source = inspect.getsource(query_database_sync)
+    close_source = inspect.getsource(close_session)
+    ok("query_database_sync: model_copy로 stream=False 강제", 'model_copy(update={"stream": False})' in sync_source)
+    ok("close_session: _close_conversation 호출", "_close_conversation" in close_source)
+
+    # 17-7 health_check 운영 정보 확장
+    health_source = inspect.getsource(health_check)
+    ok("health_check: conversation_sessions 포함", '"conversation_sessions"' in health_source)
+    ok("health_check: conversation_ttl_seconds 포함", '"conversation_ttl_seconds"' in health_source)
+    ok("health_check: expired_sessions_cleaned 포함", '"expired_sessions_cleaned"' in health_source)
+    ok("health_check: supported_dialects 포함", '"supported_dialects"' in health_source)
 
 
 # ── 메인 ─────────────────────────────────────────────────────────
@@ -801,13 +882,14 @@ _ALL_SCENARIOS = [
     test_scenario_14_v311_fixes,          # v3.1.1 버그 수정
     test_scenario_15_v312_fixes,          # v3.1.2 버그 수정
     test_scenario_16_v313_optimizations,  # v3.1.3 최적화
+    test_scenario_17_v314_api_features,   # v3.1.4 API 운영 기능
 ]
 
 if __name__ == "__main__":
     print()
     print("=" * 70)
     print("  Advanced Text-to-SQL 통합 테스트")
-    print("  2026년 6월 15일 (v3.1.3 - Responses API + QueryGuard)")
+    print("  2026년 3월 17일 (v3.1.4 - API session cleanup + sync endpoint)")
     print("=" * 70)
 
     start = time.time()

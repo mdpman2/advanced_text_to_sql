@@ -1,4 +1,4 @@
-"""Advanced Text-to-SQL Agent (v3.1.3)
+"""Advanced Text-to-SQL Agent (v3.1.4)
 Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반
 
 핵심 기술:
@@ -8,7 +8,7 @@ Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반
 4. Self-correction 및 검증 메커니즘 (5-round)
 5. Context-aware SQL 생성 (400K 토큰)
 
-지원 모델: GPT-5.2 (네이티브 추론 내장), gpt-5.2-codex (SQL 특화) 등 16종
+지원 모델: GPT-5.4 (기본 권장), gpt-5.2-codex (SQL 특화) 등 17종
 API: Responses API (2025-04-01-preview) + Structured Outputs (Pydantic v2)
 
 v3.0.0 주요 변경:
@@ -16,7 +16,7 @@ v3.0.0 주요 변경:
 - Pydantic v2 BaseModel 기반 Structured Outputs (additionalProperties 자동 보정)
 - previous_response_id를 활용한 멀티턴 대화 체이닝
 - 신규 방언: MySQL, SQL Server 추가
-- Spider 2.0 벤치마크 2026-06 최신화
+- Spider 2.0 벤치마크 2026-03 기준 문서화
 
 v3.0.0 코드 최적화:
 - TextToSQLAgent에 __slots__ 적용 (메모리 최적화)
@@ -27,8 +27,12 @@ v3.0.0 코드 최적화:
 v3.1.3 변경:
 - ask_with_history() 빈 SQL 실행 방어 (전체 재시도 실패 시 confidence 0.0 반환)
 
+v3.1.4 변경:
+- API instructions를 additional_context로 전달 가능하도록 ask()/ask_with_history() 확장
+- 세션 기반 API와 문서 메타데이터 버전 정합화
+
 Author: Azure OpenAI Sample
-Date: 2026-06-15
+Date: 2026-03-17
 """
 
 from __future__ import annotations
@@ -41,6 +45,7 @@ import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, Generator, List, Optional, Tuple
 
 from openai import AzureOpenAI
@@ -369,8 +374,10 @@ class SQLValidator:
 
 
 class ModelConfig(Enum):
-    """사용 가능한 모델 설정 (2026-06 최신, 16종)"""
-    # GPT-5.2 계열 (최신, 네이티브 추론 내장 — 별도 추론 모델 불필요)
+    """사용 가능한 모델 설정 (2026-03 기준)"""
+    # GPT-5.4 계열 (최신 권장)
+    GPT_5_4 = "gpt-5.4"               # 최신 플래그십 (권장, 추론/에이전트 기본값)
+    # GPT-5.2 계열 (호환 유지)
     GPT_5_2 = "gpt-5.2"               # 최신 플래그십 (권장, 400K context, 추론 겸용)
     GPT_5_2_CODEX = "gpt-5.2-codex"   # 코드/SQL 특화 (2026-01-14, Codex CLI 최적화)
     GPT_5_2_MINI = "gpt-5.2-mini"     # 경량 플래그십 (2026-05-14)
@@ -419,7 +426,7 @@ SQL_GENERATION_SCHEMA = {
 
 class TextToSQLAgent:
     """
-    Text-to-SQL 에이전트 (v3.1.0 — 2026-06 최신 기술 적용)
+    Text-to-SQL 에이전트 (v3.1.4 — 2026-03 refresh)
 
     Spider 2.0 벤치마크 최신 기술 기반:
     - TCDataAgent-SQL Contextual Scaling Engine 참조 (#1, 95.14%)
@@ -434,7 +441,7 @@ class TextToSQLAgent:
     - max_output_tokens 통일 파라미터
     - 400K 토큰 컨텍스트 (272K input + 128K output)
     - gpt-5.2-codex: SQL/코드 특화 모델 지원
-    - GPT-5.2 native reasoning (심층 추론)
+    - GPT-5.4 기본 추론 + GPT-5.2 호환 유지
 
     v3.0.0 코드 최적화:
     - __slots__ 적용으로 메모리 절감 및 속성 접근 가속화
@@ -452,7 +459,7 @@ class TextToSQLAgent:
     # 컴파일된 정규식 패턴 (성능 최적화)
     _JSON_PATTERN = re.compile(r'\{[\s\S]*\}')
 
-    # 지원 API 버전 (2026-06 최신)
+    # 지원 API 버전 (2026-03 기준)
     SUPPORTED_API_VERSIONS = [
         "2025-04-01-preview",         # 최신 — Responses API + Structured Outputs
         "2025-03-01-preview",         # Responses API 초기 지원
@@ -464,7 +471,7 @@ class TextToSQLAgent:
         self,
         api_key: Optional[str] = None,
         endpoint: Optional[str] = None,
-        deployment_name: str = "gpt-5.2",
+        deployment_name: str = "gpt-5.4",
         api_version: str = "2025-04-01-preview",
         use_structured_outputs: bool = True,
         max_context_tokens: int = 400000,
@@ -476,12 +483,12 @@ class TextToSQLAgent:
         Args:
             api_key: Azure OpenAI API 키 (기본: OPEN_AI_KEY_5 환경변수)
             endpoint: Azure OpenAI 엔드포인트 (기본: OPEN_AI_ENDPOINT_5 환경변수)
-            deployment_name: 모델 배포 이름 (기본: gpt-5.2, SQL 특화: gpt-5.2-codex)
+            deployment_name: 모델 배포 이름 (기본: gpt-5.4, SQL 특화: gpt-5.2-codex)
             api_version: API 버전 (기본: 2025-04-01-preview — Responses API)
             use_structured_outputs: Structured Outputs 사용 여부 (기본: True)
             max_context_tokens: 최대 컨텍스트 토큰 수 (기본: 400K — 272K input + 128K output)
             use_claude: Claude 사용 여부
-            enable_deep_reasoning: 복잡한 질문에 GPT-5.2 심층 추론 활성화 (기본: True)
+            enable_deep_reasoning: 복잡한 질문에 GPT-5.4 심층 추론 활성화 (기본: True)
             enable_safety_guard: 파괴적 SQL 안전 가드 활성화 여부 (기본: True)
         """
         self.use_claude = use_claude
@@ -662,7 +669,7 @@ class TextToSQLAgent:
         # 복잡한 질문인지 판단하여 심층 추론 활성화 여부 결정
         use_deep_reasoning = auto_select_model and self._is_complex_question(question)
         if use_deep_reasoning:
-            logger.info(f"복잡한 질문 감지: GPT-5.2 심층 추론 모드 활성화")
+            logger.info(f"복잡한 질문 감지: GPT-5.4 심층 추론 모드 활성화")
 
         schema_context = PromptBuilder.build_schema_context(self.current_schema)
         user_prompt = PromptBuilder.build_user_prompt(question, schema_context, additional_context)
@@ -677,11 +684,11 @@ class TextToSQLAgent:
                 if last_error:
                     current_prompt += f"\n## 이전 시도 오류 (Attempt {attempt}):\n{last_error}\n위 오류를 분석하고 수정하여 다시 생성해주세요."
 
-                # LLM 호출 (복잡한 질문은 GPT-5.2 심층 추론 모드 사용)
+                # LLM 호출 (복잡한 질문은 GPT-5.4 심층 추론 모드 사용)
                 response = self._call_llm(
                     PromptBuilder.SYSTEM_PROMPT,
                     current_prompt,
-                    use_deep_reasoning=use_deep_reasoning  # GPT-5.2 자체 심층 추론
+                    use_deep_reasoning=use_deep_reasoning  # GPT-5.4 기본 심층 추론
                 )
                 parsed = self._parse_llm_response(response)
 
@@ -773,7 +780,13 @@ class TextToSQLAgent:
             "affected_scope": analysis.affected_scope,
         }
 
-    def ask(self, question: str, execute: bool = True, force: bool = False) -> Dict[str, Any]:
+    def ask(
+        self,
+        question: str,
+        execute: bool = True,
+        force: bool = False,
+        additional_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         자연어 질문에 대한 답변 (SQL 생성 및 실행)
 
@@ -781,11 +794,12 @@ class TextToSQLAgent:
             question: 자연어 질문
             execute: SQL 실행 여부
             force: True이면 파괴적 SQL도 확인 없이 실행
+            additional_context: 추가 컨텍스트 (비즈니스 규칙, 사용자 지시사항 등)
 
         Returns:
             Dict: SQL, 설명, 결과 포함. 파괴적 SQL 감지 시 safety_warning 포함.
         """
-        result = self.generate_sql(question)
+        result = self.generate_sql(question, additional_context=additional_context)
 
         response = {
             "question": question,
@@ -856,13 +870,20 @@ class ConversationalSQLAgent(TextToSQLAgent):
         self._last_response_id = response.id  # 다음 턴을 위해 ID 저장
         return response.output_text or ""
 
-    def ask_with_history(self, question: str, execute: bool = True, force: bool = False) -> Dict[str, Any]:
+    def ask_with_history(
+        self,
+        question: str,
+        execute: bool = True,
+        force: bool = False,
+        additional_context: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """대화 히스토리를 고려한 질문 처리 (previous_response_id 활용)
 
         Args:
             question: 자연어 질문
             execute: SQL 실행 여부
             force: True이면 파괴적 SQL도 확인 없이 실행
+            additional_context: 추가 컨텍스트 (비즈니스 규칙, 사용자 지시사항 등)
         """
         if not self.current_schema:
             raise ValueError("데이터베이스가 로드되지 않았습니다.")
@@ -880,8 +901,16 @@ class ConversationalSQLAgent(TextToSQLAgent):
                 history_lines.append(f"SQL: {item['sql']}")
             history_context = "\n".join(history_lines)
 
+        prompt_context = history_context
+        if additional_context:
+            prompt_context = (
+                f"{history_context}\n\n## 추가 컨텍스트:\n{additional_context}"
+                if history_context
+                else f"## 추가 컨텍스트:\n{additional_context}"
+            )
+
         schema_context = PromptBuilder.build_schema_context(self.current_schema)
-        user_prompt = PromptBuilder.build_user_prompt(question, schema_context, history_context)
+        user_prompt = PromptBuilder.build_user_prompt(question, schema_context, prompt_context)
 
         last_error: Optional[str] = None
         max_retries = 3  # 대화 모드는 3회 재시도
@@ -976,8 +1005,8 @@ class ConversationalSQLAgent(TextToSQLAgent):
 
 
 def create_sample_database() -> str:
-    """샘플 데이터베이스 생성"""
-    db_path = "sample_company.db"
+    """프로젝트 디렉터리 아래에 샘플 데이터베이스를 생성합니다."""
+    db_path = Path(__file__).resolve().parent / "sample_company.db"
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
@@ -1060,7 +1089,7 @@ def create_sample_database() -> str:
     conn.commit()
     conn.close()
 
-    return db_path
+    return str(db_path)
 
 
 # 사용 예시
@@ -1077,12 +1106,12 @@ if __name__ == "__main__":
     # 에이전트 초기화 (환경 변수에서 API 키 로드)
     # 실제 사용 시 아래 주석 해제
     """
-    # GPT-5.2 + Responses API + 심층 추론 (v3.0 권장 설정)
+    # GPT-5.4 + Responses API + 심층 추론 (v3.0 권장 설정)
     agent = TextToSQLAgent(
-        deployment_name="gpt-5.2",              # GPT-5.2 (코드 특화: gpt-5.2-codex)
+        deployment_name="gpt-5.4",              # GPT-5.4 (코드 특화: gpt-5.2-codex)
         api_version="2025-04-01-preview",       # Responses API 지원 버전
         use_structured_outputs=True,            # Pydantic 기반 JSON 스키마 100% 준수
-        enable_deep_reasoning=True,             # GPT-5.2 심층 추론 활성화
+        enable_deep_reasoning=True,             # GPT-5.4 심층 추론 활성화
         max_context_tokens=400000               # 400K 컨텍스트 (272K input + 128K output)
     )
 

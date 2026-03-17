@@ -1,21 +1,18 @@
-"""
-Schema Linker - 스키마 연결 및 관계 분석 모듈 (v3.1.2)
+"""Schema Linker - 스키마 연결 및 관계 분석 모듈.
 
-Spider 2.0 벤치마크 #1 TCDataAgent-SQL의 핵심 기술인 스키마 링킹을 구현합니다.
-자연어 질문에서 관련 테이블과 컬럼을 식별합니다.
+자연어 질문에서 관련 테이블과 컬럼을 식별하고, 외래키 관계를 기반으로 조인 경로를 추론합니다.
 
-기능:
+현재 동작 요약:
 - 한국어 55+ 키워드 매핑 (평균→AVG, 합계→SUM, 이상→>= 등)
-- 퍼지 매칭 (오타 자동 수정: employes → employees)
-- 시맨틱 매핑 (직원 → employees, 부서 → departments)
+- 퍼지 매칭 기반 오타 보정
+- 엔티티/업무 용어 기반 시맨틱 매핑
 - 외래키 기반 자동 조인 추론
-- 컬럼 타입 인식 기반 연산 추론 (v3.0 신규)
-v3.0.0 코드 최적화:
-- _table_dict O(1) 테이블 룩업 딕셔너리 추가 (next() 제너레이터 순차 스캔 제거)
-- _infer_joins, get_focused_schema에서 dict.get() O(1) 직접 룩업 적용
-- SchemaLinker에 __slots__ 적용 (메모리 최적화)
-- SchemaLink, SchemaLinkingResult에 @dataclass(slots=True) 적용
-- _WORD_PATTERN, _SUBQUERY_PATTERNS 모듈 레벨 프리컴파일"""
+- 컬럼 타입 인식 기반 연산 추론
+
+구현 메모:
+- `_table_dict`와 프리컴파일 정규식을 사용해 반복 조회 비용을 줄입니다.
+- `__slots__`와 `@dataclass(slots=True)`를 적용해 메모리 사용량을 낮췄습니다.
+"""
 
 from __future__ import annotations
 

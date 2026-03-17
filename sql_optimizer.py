@@ -1,25 +1,17 @@
-"""
-SQL Optimizer & Self-Correction Module (v3.1.2)
+"""SQL Optimizer & Self-Correction Module.
 
-SQL 쿼리 최적화 및 자가 수정 기능을 제공합니다.
-Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 기술 참조.
+생성된 SQL의 비효율 패턴을 탐지하고, 흔한 스키마/문법 오류를 보정하기 위한 규칙 기반 도우미입니다.
 
-기능:
-- SELECT * / IN 서브쿼리 / ORDER BY without LIMIT 감지
-- Cartesian Join 감지 (v3.0 신규)
-- Window Function 사용 제안 (v3.0 신규)
-- SelfCorrectionEngine: 테이블/컨럼 오타, 모호한 컨럼, GROUP BY 누락, 조인 오류 자동 수정
-- 최대 5회 재시도 (5-round self-correction)
+현재 동작 요약:
+- `SELECT *`, `IN (SELECT ...)`, `ORDER BY without LIMIT` 탐지
+- Cartesian Join 감지
+- 윈도우 함수 사용 제안
+- 테이블/컬럼 오타, 모호한 컬럼, `GROUP BY` 누락 보정
+- 최대 5회 재시도 기반 self-correction
 
-v3.0.0 변경:
-- 중복 메서드 제거 (_optimize_like_pattern, _suggest_cte_usage)
-- 신규 규칙: _detect_cartesian_join, _suggest_window_function
-
-v3.0.0 코드 최적화:
-- 인라인 re.search() 3개 → _PATTERNS dict 프리컴파일 통합 (distinct, like_wildcard, null_compare)
-- SelfCorrectionEngine._COMPILED_PATTERNS 클래스 레벨 1회 컴파일 (인스턴스마다 재컴파일 방지)
-- SQLOptimizer에 __slots__ 적용 (메모리 최적화)
-- SQLIssue, OptimizationResult에 @dataclass(slots=True) 적용
+구현 메모:
+- 정규식은 `_PATTERNS`와 `_COMPILED_PATTERNS`에 모아 한 번만 컴파일합니다.
+- 데이터 객체는 `@dataclass(slots=True)`를 사용해 가볍게 유지합니다.
 """
 
 from __future__ import annotations
