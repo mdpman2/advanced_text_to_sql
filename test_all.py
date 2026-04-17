@@ -1,8 +1,8 @@
 """
-Advanced Text-to-SQL 통합 테스트 (v3.1.4)
+Advanced Text-to-SQL 통합 테스트 (v3.1.5)
 
 17개 시나리오 × 다중 테스트 케이스
-- 2026-03-17 최신 전체 실행 결과: 193 success / 0 fail / 0 skip
+- 2026-03-31 최신 대상 버전: v3.1.5 (runtime settings + telemetry)
 - 시나리오 1~11: 오프라인 (API 키 불필요)
 - 시나리오 12: API 통합 테스트 (workspace .env 자동 로드, 환경 없으면 skip)
 - 시나리오 13: v3.1 신규 (QueryGuard, 모호성, Mermaid)
@@ -10,6 +10,7 @@ Advanced Text-to-SQL 통합 테스트 (v3.1.4)
 - 시나리오 15: v3.1.2 버그 수정 검증
 - 시나리오 16: v3.1.3 최적화 검증
 - 시나리오 17: v3.1.4 API 운영 기능 검증
+- 시나리오 18: v3.1.5 운영 설정/관측 기능 검증
 
 v3.0.0 변경:
 - Pydantic 모델 (SQLGenerationSchema) 테스트 추가
@@ -670,11 +671,11 @@ def test_scenario_14_v311_fixes():
     ok("ask_with_history: execute_and_validate 호출", "execute_and_validate" in awh_source)
     ok("ask_with_history: 재시도 루프 존재", "max_retries" in awh_source)
 
-    # 14-3 demo_app _get_api_key 환경변수 일치
-    from demo_app import _get_api_key
-    get_api_source = inspect.getsource(_get_api_key)
-    ok("_get_api_key: OPEN_AI_KEY_5 확인", "OPEN_AI_KEY_5" in get_api_source)
-    ok("_get_api_key: AZURE_OPENAI_API_KEY 확인", "AZURE_OPENAI_API_KEY" in get_api_source)
+    # 14-3 runtime_config 환경변수 alias 유지
+    from runtime_config import get_azure_openai_api_key
+    get_api_source = inspect.getsource(get_azure_openai_api_key)
+    ok("api key helper: OPEN_AI_KEY_5 확인", "OPEN_AI_KEY_5" in get_api_source)
+    ok("api key helper: AZURE_OPENAI_API_KEY 확인", "AZURE_OPENAI_API_KEY" in get_api_source)
 
     # 14-4 ambiguity_detector ranking scope 실제 동작
     from ambiguity_detector import AmbiguityDetector
@@ -687,7 +688,7 @@ def test_scenario_14_v311_fixes():
     ok("ranking scope: 기준 있는 질문 통과", not r2.is_ambiguous)
 
     # 14-5 TextToSQLAgent 클래스 독스트링 버전
-    ok("TextToSQLAgent docstring: v3.1.4", "v3.1.4" in (TextToSQLAgent.__doc__ or ""))
+    ok("TextToSQLAgent docstring: v3.1.4 유지", "v3.1.4" in (TextToSQLAgent.__doc__ or ""))
 
     # 14-6 BigQuery _convert_strftime 단순화 검증
     from dialect_handler import BigQueryDialect
@@ -813,12 +814,15 @@ def test_scenario_17_v314_api_features():
         _resolve_agent,
         _execute_query_request,
         health_check,
+        telemetry_summary,
+        telemetry_queries,
         query_database,
         query_database_sync,
         _stream_sql_generation,
         close_session,
     )
     from text_to_sql_agent import TextToSQLAgent, ConversationalSQLAgent
+    from runtime_config import get_runtime_settings
 
     # 17-1 QueryRequest에 max_rows 추가
     req = QueryRequest(question="테스트", max_rows=25)
@@ -862,8 +866,336 @@ def test_scenario_17_v314_api_features():
     ok("health_check: expired_sessions_cleaned 포함", '"expired_sessions_cleaned"' in health_source)
     ok("health_check: supported_dialects 포함", '"supported_dialects"' in health_source)
 
+    # 17-8 telemetry 엔드포인트 및 설정 객체
+    telemetry_summary_source = inspect.getsource(telemetry_summary)
+    telemetry_queries_source = inspect.getsource(telemetry_queries)
+    ok("telemetry_summary: metrics 반환", 'metrics=dict(_telemetry)' in telemetry_summary_source)
+    ok("telemetry_summary: configured 반환", 'configured={' in telemetry_summary_source)
+    ok("telemetry_queries: query audit 반환", '"queries": recent' in telemetry_queries_source)
 
-# ── 메인 ─────────────────────────────────────────────────────────
+    from api_server import QueryResponse
+    qr_source = inspect.getsource(QueryResponse)
+    ok("QueryResponse: request_id 필드 추가", 'request_id' in qr_source)
+    ok("QueryResponse: duration_ms 필드 추가", 'duration_ms' in qr_source)
+
+    settings = get_runtime_settings()
+    ok("runtime settings: deployment_name 존재", bool(settings.deployment_name))
+    ok("runtime settings: api_version 존재", bool(settings.api_version))
+    ok("runtime settings: query_audit_limit 양수", settings.query_audit_limit > 0)
+
+
+def test_scenario_18_v315_runtime_observability():
+    """시나리오 18: v3.1.5 운영 설정/관측 기능 검증"""
+    section("시나리오 18: v3.1.5 운영 설정/관측 기능 검증")
+
+    import inspect
+
+    from api_server import health_check, telemetry_summary, telemetry_queries, _execute_query_request
+    from runtime_config import (
+        RuntimeSettings,
+        get_runtime_settings,
+        get_azure_openai_api_key,
+        get_azure_openai_endpoint,
+        get_deployment_name,
+        get_api_version,
+    )
+
+    settings = get_runtime_settings()
+    ok("RuntimeSettings 타입 확인", isinstance(settings, RuntimeSettings))
+    ok("settings.to_public_dict 메서드 존재", hasattr(settings, 'to_public_dict'))
+    ok("deployment_name fallback 존재", bool(get_deployment_name()))
+    ok("api_version fallback 존재", bool(get_api_version()))
+
+    health_source = inspect.getsource(health_check)
+    ok("health_check: deployment_name 포함", '"deployment_name"' in health_source)
+    ok("health_check: api_version 포함", '"api_version"' in health_source)
+    ok("health_check: query_audit_size 포함", '"query_audit_size"' in health_source)
+
+    summary_source = inspect.getsource(telemetry_summary)
+    ok("telemetry_summary: active_sessions 포함", 'active_sessions=len(_conversations)' in summary_source)
+    ok("telemetry_summary: default_max_rows 포함", '"default_max_rows"' in summary_source)
+
+    queries_source = inspect.getsource(telemetry_queries)
+    ok("telemetry_queries: limit 파라미터 존재", 'limit: int = Query' in queries_source)
+
+    exec_source = inspect.getsource(_execute_query_request)
+    ok("_execute_query_request: request_id 생성", '_new_request_id()' in exec_source)
+    ok("_execute_query_request: duration_ms 기록", 'response.duration_ms' in exec_source)
+    ok("_execute_query_request: audit 기록", '_record_query_audit(' in exec_source)
+
+    api_key_source = inspect.getsource(get_azure_openai_api_key)
+    endpoint_source = inspect.getsource(get_azure_openai_endpoint)
+    ok("env helper: OPEN_AI_KEY_5 alias", 'OPEN_AI_KEY_5' in api_key_source)
+    ok("env helper: AZURE_OPENAI_API_KEY alias", 'AZURE_OPENAI_API_KEY' in api_key_source)
+    ok("env helper: OPEN_AI_ENDPOINT_5 alias", 'OPEN_AI_ENDPOINT_5' in endpoint_source)
+    ok("env helper: AZURE_OPENAI_ENDPOINT alias", 'AZURE_OPENAI_ENDPOINT' in endpoint_source)
+
+
+# ── 시나리오 19: v3.2.0 Responses API 네이티브 파라미터 검증 ──
+
+def test_scenario_19_v320_native_responses_params():
+    """시나리오 19: v3.2.0 reasoning.effort / verbosity / prompt_cache_key / 실행피드백"""
+    section("시나리오 19: v3.2.0 Responses API 네이티브 파라미터 검증")
+
+    import inspect
+
+    from text_to_sql_agent import (
+        TextToSQLAgent, _is_aggregate_query, create_sample_database,
+    )
+    from runtime_config import RuntimeSettings, get_runtime_settings
+
+    # 19-1 RuntimeSettings에 v3.2.0 필드 존재
+    settings = get_runtime_settings()
+    ok("settings.default_reasoning_effort 존재", hasattr(settings, 'default_reasoning_effort'))
+    ok("settings.deep_reasoning_effort 존재", hasattr(settings, 'deep_reasoning_effort'))
+    ok("settings.verbosity 존재", hasattr(settings, 'verbosity'))
+    ok("settings.prompt_cache_retention 존재", hasattr(settings, 'prompt_cache_retention'))
+    ok("settings.enable_execution_feedback 존재", hasattr(settings, 'enable_execution_feedback'))
+    ok("default_reasoning_effort 유효값",
+       settings.default_reasoning_effort in {"none", "minimal", "low", "medium", "high", "xhigh"})
+    ok("verbosity 유효값", settings.verbosity in {"low", "medium", "high"})
+    ok("prompt_cache_retention 유효값", settings.prompt_cache_retention in {"in-memory", "24h"})
+
+    # 19-2 TextToSQLAgent __slots__ 확장
+    slot_set = set(TextToSQLAgent.__slots__)
+    for name in ("default_reasoning_effort", "deep_reasoning_effort", "verbosity",
+                 "prompt_cache_retention", "prompt_cache_key",
+                 "enable_execution_feedback", "_last_token_usage"):
+        ok(f"TextToSQLAgent.__slots__ 에 {name}", name in slot_set)
+
+    # 19-3 _is_reasoning_model 동작
+    agent = TextToSQLAgent.__new__(TextToSQLAgent)
+    agent.deployment_name = "gpt-5.4"
+    ok("gpt-5.4 → reasoning model", agent._is_reasoning_model())
+    agent.deployment_name = "o3-mini"
+    ok("o3-mini → reasoning model", agent._is_reasoning_model())
+    agent.deployment_name = "gpt-4.1"
+    ok("gpt-4.1 → reasoning 아님", not agent._is_reasoning_model())
+
+    # 19-4 _build_request_params 구조 (소스 검사)
+    src = inspect.getsource(TextToSQLAgent._build_request_params)
+    ok("_build_request_params: reasoning.effort 설정", '"reasoning"' in src and '"effort"' in src)
+    ok("_build_request_params: reasoning 모델에서 temperature 미설정 분기",
+       'if self._is_reasoning_model()' in src)
+    ok("_build_request_params: prompt_cache_key 적용", 'prompt_cache_key' in src)
+    ok("_build_request_params: prompt_cache_retention 적용", 'prompt_cache_retention' in src)
+    ok("_build_request_params: previous_response_id 지원", 'previous_response_id' in src)
+
+    # 19-5 _build_text_config: verbosity 포함
+    text_cfg_src = inspect.getsource(TextToSQLAgent._build_text_config)
+    ok("_build_text_config: verbosity 분기", 'verbosity' in text_cfg_src)
+
+    # 19-6 _call_llm 가 _build_request_params 를 사용하도록 리팩터링됨
+    call_src = inspect.getsource(TextToSQLAgent._call_llm)
+    ok("_call_llm: _build_request_params 사용", '_build_request_params' in call_src)
+    ok("_call_llm: 프롬프트 삽입 '심층 추론 모드' 제거",
+       "심층 추론 모드 (Deep Reasoning)" not in call_src)
+
+    # 19-7 집계 쿼리 감지기
+    ok("_is_aggregate_query: COUNT", _is_aggregate_query("SELECT COUNT(*) FROM t"))
+    ok("_is_aggregate_query: GROUP BY", _is_aggregate_query("SELECT a, SUM(b) FROM t GROUP BY a"))
+    ok("_is_aggregate_query: 일반 SELECT false", not _is_aggregate_query("SELECT * FROM t WHERE x=1"))
+
+    # 19-8 last_token_usage 프로퍼티
+    ok("last_token_usage 프로퍼티 존재",
+       isinstance(inspect.getattr_static(TextToSQLAgent, 'last_token_usage'), property))
+
+    # 19-9 load_database 가 prompt_cache_key 자동 생성
+    load_src = inspect.getsource(TextToSQLAgent.load_database)
+    ok("load_database: prompt_cache_key 자동 생성", 'self.prompt_cache_key' in load_src)
+
+    # 19-10 generate_sql 에 ReFoRCE 스타일 빈결과 피드백 포함
+    gen_src = inspect.getsource(TextToSQLAgent.generate_sql)
+    ok("generate_sql: enable_execution_feedback 분기", 'enable_execution_feedback' in gen_src)
+    ok("generate_sql: 빈 결과 자동 재생성 메시지", '결과가 0행' in gen_src)
+
+    # 19-11 api_server QueryResponse 에 token_usage 필드 추가
+    from api_server import QueryResponse
+    qr_src = inspect.getsource(QueryResponse)
+    ok("QueryResponse: token_usage 필드", 'token_usage' in qr_src)
+
+    from api_server import health_check
+    health_src = inspect.getsource(health_check)
+    ok("health_check: v3.2.0 reasoning 상태 노출",
+       '"default_reasoning_effort"' in health_src and '"verbosity"' in health_src)
+    ok("health_check: version 3.2.0", '"3.2.0"' in health_src)
+
+
+# ── 시나리오 19: v3.2.0 Responses API 네이티브 파라미터 검증 ──
+
+def test_scenario_19_v320_native_responses_params():
+    """시나리오 19: v3.2.0 reasoning.effort / verbosity / prompt_cache_key / 실행피드백"""
+    section("시나리오 19: v3.2.0 Responses API 네이티브 파라미터 검증")
+
+    import inspect
+
+    from text_to_sql_agent import (
+        TextToSQLAgent, _is_aggregate_query, create_sample_database,
+    )
+    from runtime_config import RuntimeSettings, get_runtime_settings
+
+    # 19-1 RuntimeSettings에 v3.2.0 필드 존재
+    settings = get_runtime_settings()
+    ok("settings.default_reasoning_effort 존재", hasattr(settings, 'default_reasoning_effort'))
+    ok("settings.deep_reasoning_effort 존재", hasattr(settings, 'deep_reasoning_effort'))
+    ok("settings.verbosity 존재", hasattr(settings, 'verbosity'))
+    ok("settings.prompt_cache_retention 존재", hasattr(settings, 'prompt_cache_retention'))
+    ok("settings.enable_execution_feedback 존재", hasattr(settings, 'enable_execution_feedback'))
+    ok("default_reasoning_effort 유효값",
+       settings.default_reasoning_effort in {"none", "minimal", "low", "medium", "high", "xhigh"})
+    ok("verbosity 유효값", settings.verbosity in {"low", "medium", "high"})
+    ok("prompt_cache_retention 유효값", settings.prompt_cache_retention in {"in-memory", "24h"})
+
+    # 19-2 TextToSQLAgent __slots__ 확장
+    slot_set = set(TextToSQLAgent.__slots__)
+    for name in ("default_reasoning_effort", "deep_reasoning_effort", "verbosity",
+                 "prompt_cache_retention", "prompt_cache_key",
+                 "enable_execution_feedback", "_last_token_usage"):
+        ok(f"TextToSQLAgent.__slots__ 에 {name}", name in slot_set)
+
+    # 19-3 _is_reasoning_model 동작
+    agent = TextToSQLAgent.__new__(TextToSQLAgent)
+    agent.deployment_name = "gpt-5.4"
+    ok("gpt-5.4 → reasoning model", agent._is_reasoning_model())
+    agent.deployment_name = "o3-mini"
+    ok("o3-mini → reasoning model", agent._is_reasoning_model())
+    agent.deployment_name = "gpt-4.1"
+    ok("gpt-4.1 → reasoning 아님", not agent._is_reasoning_model())
+
+    # 19-4 _build_request_params 구조 (소스 검사)
+    src = inspect.getsource(TextToSQLAgent._build_request_params)
+    ok("_build_request_params: reasoning.effort 설정", '"reasoning"' in src and '"effort"' in src)
+    ok("_build_request_params: reasoning 모델에서 temperature 미설정 분기",
+       'if self._is_reasoning_model()' in src)
+    ok("_build_request_params: prompt_cache_key 적용", 'prompt_cache_key' in src)
+    ok("_build_request_params: prompt_cache_retention 적용", 'prompt_cache_retention' in src)
+    ok("_build_request_params: previous_response_id 지원", 'previous_response_id' in src)
+
+    # 19-5 _build_text_config: verbosity 포함
+    text_cfg_src = inspect.getsource(TextToSQLAgent._build_text_config)
+    ok("_build_text_config: verbosity 분기", 'verbosity' in text_cfg_src)
+
+    # 19-6 _call_llm 가 _build_request_params 를 사용하도록 리팩터링됨
+    call_src = inspect.getsource(TextToSQLAgent._call_llm)
+    ok("_call_llm: _build_request_params 사용", '_build_request_params' in call_src)
+    ok("_call_llm: 프롬프트 삽입 '심층 추론 모드' 제거",
+       "심층 추론 모드 (Deep Reasoning)" not in call_src)
+
+    # 19-7 집계 쿼리 감지기
+    ok("_is_aggregate_query: COUNT", _is_aggregate_query("SELECT COUNT(*) FROM t"))
+    ok("_is_aggregate_query: GROUP BY", _is_aggregate_query("SELECT a, SUM(b) FROM t GROUP BY a"))
+    ok("_is_aggregate_query: 일반 SELECT false", not _is_aggregate_query("SELECT * FROM t WHERE x=1"))
+
+    # 19-8 last_token_usage 프로퍼티
+    ok("last_token_usage 프로퍼티 존재",
+       isinstance(inspect.getattr_static(TextToSQLAgent, 'last_token_usage'), property))
+
+    # 19-9 load_database 가 prompt_cache_key 자동 생성
+    load_src = inspect.getsource(TextToSQLAgent.load_database)
+    ok("load_database: prompt_cache_key 자동 생성", 'self.prompt_cache_key' in load_src)
+
+    # 19-10 generate_sql 에 ReFoRCE 스타일 빈결과 피드백 포함
+    gen_src = inspect.getsource(TextToSQLAgent.generate_sql)
+    ok("generate_sql: enable_execution_feedback 분기", 'enable_execution_feedback' in gen_src)
+    ok("generate_sql: 빈 결과 자동 재생성 메시지", '결과가 0행' in gen_src)
+
+    # 19-11 api_server QueryResponse 에 token_usage 필드 추가
+    from api_server import QueryResponse
+    qr_src = inspect.getsource(QueryResponse)
+    ok("QueryResponse: token_usage 필드", 'token_usage' in qr_src)
+
+    from api_server import health_check
+    health_src = inspect.getsource(health_check)
+    ok("health_check: v3.2.0 reasoning 상태 노출",
+       '"default_reasoning_effort"' in health_src and '"verbosity"' in health_src)
+    ok("health_check: version 3.2.0", '"3.2.0"' in health_src)
+
+
+# ── 시나리오 20: v3.2.0 임베딩 기반 Schema Retriever 검증 ──
+
+def test_scenario_20_v320_embedding_retriever():
+    """시나리오 20: EmbeddingSchemaRetriever 구조 + SchemaLinker 통합 (API 호출 없이 정적 검증)"""
+    section("시나리오 20: v3.2.0 임베딩 기반 Schema Retriever 검증")
+
+    import inspect
+    from runtime_config import get_runtime_settings
+
+    # 20-1 RuntimeSettings 확장 필드
+    settings = get_runtime_settings()
+    ok("settings.enable_embedding_retrieval 존재", hasattr(settings, "enable_embedding_retrieval"))
+    ok("settings.embedding_deployment 존재", hasattr(settings, "embedding_deployment"))
+    ok("settings.embedding_top_k 존재", hasattr(settings, "embedding_top_k"))
+    ok("settings.embedding_min_score 존재", hasattr(settings, "embedding_min_score"))
+    ok("embedding_top_k >= 1", settings.embedding_top_k >= 1)
+    ok("embedding_min_score 0~1", 0.0 <= settings.embedding_min_score <= 1.0)
+
+    # 20-2 모듈 임포트 및 주요 심볼
+    import schema_retriever as sr
+    ok("schema_retriever: EmbeddingSchemaRetriever", hasattr(sr, "EmbeddingSchemaRetriever"))
+    ok("schema_retriever: RetrievalHit", hasattr(sr, "RetrievalHit"))
+    ok("schema_retriever: TableEmbedding", hasattr(sr, "TableEmbedding"))
+    ok("schema_retriever: _cosine 헬퍼", hasattr(sr, "_cosine"))
+
+    # 20-3 코사인 유사도 정상 동작 (순수 파이썬)
+    ok("_cosine: 동일 벡터 = 1.0", abs(sr._cosine([1.0, 0.0], [1.0, 0.0]) - 1.0) < 1e-9)
+    ok("_cosine: 직교 벡터 = 0.0", abs(sr._cosine([1.0, 0.0], [0.0, 1.0])) < 1e-9)
+    ok("_cosine: 빈 벡터 방어 = 0.0", sr._cosine([], [1.0]) == 0.0)
+
+    # 20-4 자격증명 없이 생성 시 조용히 비활성화
+    import os
+    saved = {k: os.environ.pop(k, None) for k in (
+        "OPEN_AI_KEY_5", "AZURE_OPENAI_API_KEY",
+        "OPEN_AI_ENDPOINT_5", "AZURE_OPENAI_ENDPOINT",
+    )}
+    try:
+        dummy = sr.EmbeddingSchemaRetriever()
+        ok("자격증명 없을 때 is_ready False", dummy.is_ready is False)
+        ok("빈 질문 retrieve는 빈 리스트", dummy.retrieve("", top_k=3) == [])
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+    # 20-5 _serialize_table 결과에 PK/FK 포함
+    from text_to_sql_agent import SchemaExtractor, create_sample_database
+    db_path = create_sample_database()
+    schema = SchemaExtractor.extract_sqlite_schema(db_path)
+    emp_table = next(t for t in schema.tables if t.name == "employees")
+    serialized = sr.EmbeddingSchemaRetriever._serialize_table(emp_table)
+    ok("_serialize_table: Table 키워드", "Table: employees" in serialized)
+    ok("_serialize_table: Columns 포함", "Columns:" in serialized)
+    ok("_serialize_table: PrimaryKeys 포함", "PrimaryKeys:" in serialized)
+    ok("_serialize_table: ForeignKeys 포함", "ForeignKeys:" in serialized)
+
+    # 20-6 SchemaLinker 확장: attach_retriever 존재 + __slots__ 확장
+    from schema_linker import SchemaLinker
+    ok("SchemaLinker.attach_retriever 메서드", callable(getattr(SchemaLinker, "attach_retriever", None)))
+    slot_set = set(SchemaLinker.__slots__)
+    for slot in ("_retriever", "_retriever_top_k", "_retriever_min_score"):
+        ok(f"SchemaLinker.__slots__ 에 {slot}", slot in slot_set)
+
+    # 20-7 link() 가 임베딩 보강 분기 포함
+    link_src = inspect.getsource(SchemaLinker.link)
+    ok("link(): _retriever 분기", "self._retriever" in link_src)
+    ok("link(): embedding link_type 생성", '"embedding"' in link_src)
+
+    # 20-8 비활성 retriever 부착 시 False 반환 + 기존 동작 보존
+    linker = SchemaLinker(schema)
+    attached = linker.attach_retriever(dummy)
+    ok("is_ready=False 검색기 attach → False", attached is False)
+    result = linker.link("개발팀 직원들의 평균 연봉")
+    ok("retriever 없어도 링킹 정상 동작", "employees" in result.relevant_tables)
+
+    # 20-9 api_server._register_database 에 retriever 등록 분기
+    from api_server import _register_database, health_check
+    reg_src = inspect.getsource(_register_database)
+    ok("_register_database: enable_embedding_retrieval 분기", "enable_embedding_retrieval" in reg_src)
+    ok("_register_database: EmbeddingSchemaRetriever 임포트", "EmbeddingSchemaRetriever" in reg_src)
+    ok("_register_database: attach_retriever 호출", "attach_retriever" in reg_src)
+
+    health_src2 = inspect.getsource(health_check)
+    ok("health_check: embedding 설정 노출",
+       '"embedding_retrieval_enabled"' in health_src2 and '"embedding_deployment"' in health_src2)
 
 _ALL_SCENARIOS = [
     test_scenario_01_imports,
@@ -883,13 +1215,16 @@ _ALL_SCENARIOS = [
     test_scenario_15_v312_fixes,          # v3.1.2 버그 수정
     test_scenario_16_v313_optimizations,  # v3.1.3 최적화
     test_scenario_17_v314_api_features,   # v3.1.4 API 운영 기능
+    test_scenario_18_v315_runtime_observability,  # v3.1.5 운영 설정/관측 기능
+    test_scenario_19_v320_native_responses_params,  # v3.2.0 Responses API 네이티브 파라미터
+    test_scenario_20_v320_embedding_retriever,  # v3.2.0 임베딩 기반 Schema Retriever
 ]
 
 if __name__ == "__main__":
     print()
     print("=" * 70)
     print("  Advanced Text-to-SQL 통합 테스트")
-    print("  2026년 3월 17일 (v3.1.4 - API session cleanup + sync endpoint)")
+    print("  2026년 4월 17일 (v3.2.0 - Responses API 네이티브 파라미터)")
     print("=" * 70)
 
     start = time.time()

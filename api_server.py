@@ -1,5 +1,5 @@
 """
-REST API Server for Advanced Text-to-SQL Agent (v3.1.4)
+REST API Server for Advanced Text-to-SQL Agent (v3.1.5)
 
 QueryWeaver 참조 FastAPI 기반 REST API 서버.
 SSE(Server-Sent Events) 스트리밍, 파괴적 SQL 확인, 모호한 질문 후속 질문 기능 포함.
@@ -28,16 +28,23 @@ v3.1.4 변경:
 - max_rows 파라미터로 응답 행 수 제한 제어
 - /health 운영 메타데이터 확장
 
+v3.1.5 변경:
+- runtime_config.py 기반 설정 중앙화
+- request_id / duration_ms 응답 메타데이터 추가
+- /telemetry/summary, /telemetry/queries 엔드포인트 추가
+- 최근 질의 감사 로그 및 기본 메트릭 수집
+
 실행:
     uvicorn api_server:app --host 0.0.0.0 --port 5000 --reload
 
 Author: Azure OpenAI Sample
-Date: 2026-03-17
+Date: 2026-03-31
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -67,8 +74,10 @@ from dialect_handler import SQLDialect, MultiDatabaseQuery
 from query_guard import QueryGuard, ConfirmationStore
 from ambiguity_detector import AmbiguityDetector
 from schema_graph import SchemaGraphBuilder
+from runtime_config import get_runtime_settings, get_azure_openai_api_key
 
 logger = logging.getLogger(__name__)
+_SETTINGS = get_runtime_settings()
 
 # ── 글로벌 상태 ──
 
@@ -76,7 +85,21 @@ _databases: Dict[str, Dict[str, Any]] = {}      # db_id → {path, schema, agent
 _conversations: Dict[str, ConversationalSQLAgent] = {}  # db_id:session_id → agent
 _conversation_last_used: Dict[str, float] = {}
 _confirmation_store = ConfirmationStore()
-CONVERSATION_TTL_SECONDS = 1800  # 30분
+CONVERSATION_TTL_SECONDS = _SETTINGS.conversation_ttl_seconds
+_query_audit_log: deque[Dict[str, Any]] = deque(maxlen=_SETTINGS.query_audit_limit)
+_telemetry: Dict[str, int] = {
+    "queries_total": 0,
+    "queries_stream": 0,
+    "queries_sync": 0,
+    "queries_executed": 0,
+    "queries_with_results": 0,
+    "ambiguity_detected": 0,
+    "confirmation_required": 0,
+    "errors_total": 0,
+    "database_uploads": 0,
+    "conversation_creations": 0,
+    "conversation_closures": 0,
+}
 
 
 # ── Pydantic 요청/응답 모델 ──
@@ -106,6 +129,10 @@ class QueryResponse(BaseModel):
     follow_up_questions: Optional[List[str]] = None
     ambiguity_detected: bool = False
     ambiguity_reason: Optional[str] = None
+    request_id: Optional[str] = None
+    duration_ms: Optional[int] = None
+    # v3.2.0 — Responses API 토큰 관측성
+    token_usage: Optional[Dict[str, int]] = None
 
 
 class ConfirmRequest(BaseModel):
@@ -126,9 +153,31 @@ class SchemaGraphResponse(BaseModel):
     metadata: Dict[str, Any]
 
 
+class TelemetrySummaryResponse(BaseModel):
+    metrics: Dict[str, int]
+    recent_queries: int
+    active_sessions: int
+    configured: Dict[str, Any]
+
+
 # ── 스트리밍 헬퍼 ──
 
 STREAM_BOUNDARY = "|||TEXT2SQL_BOUNDARY|||"
+
+
+def _new_request_id() -> str:
+    return f"req_{uuid.uuid4().hex[:12]}"
+
+
+def _increment_metric(name: str, value: int = 1) -> None:
+    _telemetry[name] = _telemetry.get(name, 0) + value
+
+
+def _record_query_audit(**event: Any) -> None:
+    _query_audit_log.append({
+        "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        **event,
+    })
 
 
 async def _stream_sql_generation(
@@ -143,20 +192,24 @@ async def _stream_sql_generation(
     dialect: str = "sqlite",
     additional_context: Optional[str] = None,
     max_rows: int = 100,
+    request_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     """SSE 스트리밍으로 SQL 생성 과정을 단계별 전송"""
 
     # Step 1: 모호성 감지
     yield json.dumps({
         "step": "ambiguity_check",
+        "request_id": request_id,
         "message": "질문 분석 중...",
         "status": "in_progress"
     }, ensure_ascii=False) + STREAM_BOUNDARY
 
     ambiguity = ambiguity_detector.detect(question, schema)
     if ambiguity["is_ambiguous"]:
+        _increment_metric("ambiguity_detected")
         yield json.dumps({
             "step": "ambiguity_detected",
+            "request_id": request_id,
             "message": ambiguity["reason"],
             "follow_up_questions": ambiguity["suggestions"],
             "status": "needs_clarification"
@@ -165,6 +218,7 @@ async def _stream_sql_generation(
     # Step 2: 스키마 링킹
     yield json.dumps({
         "step": "schema_linking",
+        "request_id": request_id,
         "message": "관련 테이블/컬럼 식별 중...",
         "status": "in_progress"
     }, ensure_ascii=False) + STREAM_BOUNDARY
@@ -172,6 +226,7 @@ async def _stream_sql_generation(
     link_result = linker.link(question)
     yield json.dumps({
         "step": "schema_linking",
+        "request_id": request_id,
         "message": f"관련 테이블: {', '.join(link_result.relevant_tables)}",
         "tables": list(link_result.relevant_tables),
         "status": "completed"
@@ -182,6 +237,7 @@ async def _stream_sql_generation(
     # Step 3: SQL 생성
     yield json.dumps({
         "step": "sql_generation",
+        "request_id": request_id,
         "message": "SQL 생성 중...",
         "status": "in_progress"
     }, ensure_ascii=False) + STREAM_BOUNDARY
@@ -206,6 +262,7 @@ async def _stream_sql_generation(
 
         yield json.dumps({
             "step": "sql_generation",
+            "request_id": request_id,
             "sql": display_sql,
             "explanation": result["explanation"],
             "confidence": result["confidence"],
@@ -215,14 +272,17 @@ async def _stream_sql_generation(
     except Exception as e:
         yield json.dumps({
             "step": "sql_generation",
+            "request_id": request_id,
             "message": f"SQL 생성 실패: {str(e)}",
             "status": "error"
         }, ensure_ascii=False) + STREAM_BOUNDARY
+        _increment_metric("errors_total")
         return
 
     # Step 4: 최적화 분석
     yield json.dumps({
         "step": "optimization",
+        "request_id": request_id,
         "message": "쿼리 최적화 분석 중...",
         "status": "in_progress"
     }, ensure_ascii=False) + STREAM_BOUNDARY
@@ -231,6 +291,7 @@ async def _stream_sql_generation(
     if opt_result.optimizations_applied:
         yield json.dumps({
             "step": "optimization",
+            "request_id": request_id,
             "suggestions": opt_result.optimizations_applied,
             "status": "completed"
         }, ensure_ascii=False) + STREAM_BOUNDARY
@@ -238,8 +299,10 @@ async def _stream_sql_generation(
     # Step 5: 파괴적 SQL 확인
     if guard.is_destructive(sql):
         confirmation_id = _confirmation_store.store(sql, agent)
+        _increment_metric("confirmation_required")
         yield json.dumps({
             "step": "confirmation_required",
+            "request_id": request_id,
             "message": guard.get_warning_message(sql),
             "confirmation_id": confirmation_id,
             "sql": sql,
@@ -251,6 +314,7 @@ async def _stream_sql_generation(
     if execute and agent.db_connection:
         yield json.dumps({
             "step": "execution",
+            "request_id": request_id,
             "message": "SQL 실행 중...",
             "status": "in_progress"
         }, ensure_ascii=False) + STREAM_BOUNDARY
@@ -260,21 +324,26 @@ async def _stream_sql_generation(
             results = [dict(zip(columns, row)) for row in rows]
             yield json.dumps({
                 "step": "execution",
+                "request_id": request_id,
                 "columns": columns,
                 "results": results[:max_rows],
                 "row_count": len(rows),
                 "status": "completed"
             }, ensure_ascii=False) + STREAM_BOUNDARY
+            _increment_metric("queries_with_results")
         except Exception as e:
             yield json.dumps({
                 "step": "execution",
+                "request_id": request_id,
                 "message": f"실행 오류: {str(e)}",
                 "status": "error"
             }, ensure_ascii=False) + STREAM_BOUNDARY
+            _increment_metric("errors_total")
 
     # 최종 완료
     yield json.dumps({
         "step": "done",
+        "request_id": request_id,
         "status": "completed"
     }, ensure_ascii=False) + STREAM_BOUNDARY
 
@@ -301,13 +370,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Advanced Text-to-SQL API",
     description="Spider 2.0 #1 기술 기반 Text-to-SQL REST API (QueryWeaver 참조)",
-    version="3.1.4",
+    version="3.1.5",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=list(_SETTINGS.cors_allow_origins),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -321,10 +390,30 @@ def _register_database(db_id: str, db_path: str) -> Dict[str, Any]:
 
     # 에이전트는 API 키가 있을 때만 생성
     agent = None
-    api_key = os.getenv("OPEN_AI_KEY_5") or os.getenv("AZURE_OPENAI_API_KEY")
+    api_key = get_azure_openai_api_key()
     if api_key:
-        agent = TextToSQLAgent(deployment_name="gpt-5.4")
+        agent = TextToSQLAgent(
+            deployment_name=_SETTINGS.deployment_name,
+            api_version=_SETTINGS.api_version,
+        )
         agent.load_database(db_path)
+
+    # v3.2.0 — 임베딩 기반 Schema Retriever 선택적 부착
+    retriever = None
+    if api_key and _SETTINGS.enable_embedding_retrieval:
+        try:
+            from schema_retriever import EmbeddingSchemaRetriever
+            retriever = EmbeddingSchemaRetriever(
+                deployment_name=_SETTINGS.embedding_deployment,
+            )
+            linker.attach_retriever(
+                retriever,
+                top_k=_SETTINGS.embedding_top_k,
+                min_score=_SETTINGS.embedding_min_score,
+            )
+        except Exception as exc:  # 선택 기능이므로 실패해도 서비스는 계속
+            logger.warning(f"EmbeddingSchemaRetriever 부착 실패 (db={db_id}): {exc}")
+            retriever = None
 
     _databases[db_id] = {
         "path": db_path,
@@ -334,7 +423,9 @@ def _register_database(db_id: str, db_path: str) -> Dict[str, Any]:
         "guard": QueryGuard(),
         "ambiguity_detector": AmbiguityDetector(schema),
         "agent": agent,
+        "retriever": retriever,
     }
+    _increment_metric("database_uploads")
     return _databases[db_id]
 
 
@@ -344,6 +435,7 @@ def _close_conversation(session_key: str) -> None:
     if agent:
         agent.close()
     _conversation_last_used.pop(session_key, None)
+    _increment_metric("conversation_closures")
 
 
 def _cleanup_expired_conversations() -> int:
@@ -374,17 +466,21 @@ def _get_or_create_conversation_agent(db_id: str, session_id: str) -> Conversati
         return agent
 
     db_info = _get_db(db_id)
-    api_key = os.getenv("OPEN_AI_KEY_5") or os.getenv("AZURE_OPENAI_API_KEY")
+    api_key = get_azure_openai_api_key()
     if not api_key:
         raise HTTPException(
             status_code=503,
             detail="API 키가 설정되지 않았습니다. OPEN_AI_KEY_5 또는 AZURE_OPENAI_API_KEY를 설정하세요."
         )
 
-    agent = ConversationalSQLAgent(deployment_name="gpt-5.4")
+    agent = ConversationalSQLAgent(
+        deployment_name=_SETTINGS.deployment_name,
+        api_version=_SETTINGS.api_version,
+    )
     agent.load_database(db_info["path"])
     _conversations[session_key] = agent
     _touch_conversation(session_key)
+    _increment_metric("conversation_creations")
     return agent
 
 
@@ -418,16 +514,51 @@ async def health_check():
     expired_cleaned = _cleanup_expired_conversations()
     return {
         "status": "ok",
-        "version": "3.1.4",
+        "version": "3.2.0",
         "databases": len(_databases),
         "database_ids": sorted(_databases.keys()),
         "conversation_sessions": len(_conversations),
         "conversation_ttl_seconds": CONVERSATION_TTL_SECONDS,
         "expired_sessions_cleaned": expired_cleaned,
         "agents_ready": sum(1 for info in _databases.values() if info.get("agent") is not None),
-        "azure_openai_configured": bool(os.getenv("OPEN_AI_KEY_5") or os.getenv("AZURE_OPENAI_API_KEY")),
+        "azure_openai_configured": _SETTINGS.azure_openai_configured,
         "supported_dialects": [dialect.value for dialect in SQLDialect],
+        "deployment_name": _SETTINGS.deployment_name,
+        "api_version": _SETTINGS.api_version,
+        "query_audit_size": len(_query_audit_log),
+        "query_audit_limit": _SETTINGS.query_audit_limit,
+        # v3.2.0 — Responses API 네이티브 파라미터 상태
+        "default_reasoning_effort": _SETTINGS.default_reasoning_effort,
+        "deep_reasoning_effort": _SETTINGS.deep_reasoning_effort,
+        "verbosity": _SETTINGS.verbosity,
+        "prompt_cache_retention": _SETTINGS.prompt_cache_retention,
+        "execution_feedback_enabled": _SETTINGS.enable_execution_feedback,
+        "embedding_retrieval_enabled": _SETTINGS.enable_embedding_retrieval,
+        "embedding_deployment": _SETTINGS.embedding_deployment,
     }
+
+
+@app.get("/telemetry/summary", response_model=TelemetrySummaryResponse)
+async def telemetry_summary():
+    _cleanup_expired_conversations()
+    return TelemetrySummaryResponse(
+        metrics=dict(_telemetry),
+        recent_queries=len(_query_audit_log),
+        active_sessions=len(_conversations),
+        configured={
+            "deployment_name": _SETTINGS.deployment_name,
+            "api_version": _SETTINGS.api_version,
+            "default_max_rows": _SETTINGS.default_max_rows,
+            "max_result_window": _SETTINGS.max_result_window,
+            "query_audit_limit": _SETTINGS.query_audit_limit,
+        },
+    )
+
+
+@app.get("/telemetry/queries")
+async def telemetry_queries(limit: int = Query(20, ge=1, le=200)):
+    recent = list(_query_audit_log)[-limit:]
+    return {"queries": recent, "count": len(recent)}
 
 
 @app.get("/databases")
@@ -508,12 +639,30 @@ async def get_schema_graph(db_id: str):
 
 async def _execute_query_request(db_id: str, request: QueryRequest):
     """공통 Text-to-SQL 질의 처리"""
+    started_at = time.perf_counter()
+    request_id = _new_request_id()
     _cleanup_expired_conversations()
     db_info = _get_db(db_id)
     agent = _resolve_agent(db_id, request.session_id)
     additional_context = request.instructions.strip() if request.instructions else None
+    _increment_metric("queries_total")
+    if request.stream:
+        _increment_metric("queries_stream")
+    else:
+        _increment_metric("queries_sync")
+    if request.execute:
+        _increment_metric("queries_executed")
 
     if request.stream:
+        _record_query_audit(
+            request_id=request_id,
+            db_id=db_id,
+            session_id=request.session_id,
+            mode="stream",
+            dialect=request.dialect,
+            execute=request.execute,
+            question=request.question[:160],
+        )
         return StreamingResponse(
             _stream_sql_generation(
                 agent=agent,
@@ -527,13 +676,17 @@ async def _execute_query_request(db_id: str, request: QueryRequest):
                 dialect=request.dialect,
                 additional_context=additional_context,
                 max_rows=request.max_rows,
+                request_id=request_id,
             ),
             media_type="text/event-stream",
+            headers={"X-Request-ID": request_id},
         )
 
     guard: QueryGuard = db_info["guard"]
     ambiguity_detector: AmbiguityDetector = db_info["ambiguity_detector"]
     ambiguity = ambiguity_detector.detect(request.question, db_info["schema"])
+    if ambiguity["is_ambiguous"]:
+        _increment_metric("ambiguity_detected")
 
     try:
         if isinstance(agent, ConversationalSQLAgent):
@@ -562,6 +715,8 @@ async def _execute_query_request(db_id: str, request: QueryRequest):
         ambiguity_detected=ambiguity["is_ambiguous"],
         ambiguity_reason=ambiguity.get("reason"),
         follow_up_questions=ambiguity.get("suggestions"),
+        request_id=request_id,
+        token_usage=agent.last_token_usage or None,
     )
 
     if guard.is_destructive(sqlite_sql):
@@ -569,6 +724,21 @@ async def _execute_query_request(db_id: str, request: QueryRequest):
         response.requires_confirmation = True
         response.confirmation_id = confirmation_id
         response.confirmation_message = guard.get_warning_message(sqlite_sql)
+        _increment_metric("confirmation_required")
+        response.duration_ms = int((time.perf_counter() - started_at) * 1000)
+        _record_query_audit(
+            request_id=request_id,
+            db_id=db_id,
+            session_id=request.session_id,
+            mode="sync",
+            dialect=request.dialect,
+            execute=request.execute,
+            ambiguity_detected=response.ambiguity_detected,
+            requires_confirmation=True,
+            confidence=response.confidence,
+            duration_ms=response.duration_ms,
+            question=request.question[:160],
+        )
         return response
 
     if request.execute and agent.db_connection:
@@ -576,8 +746,27 @@ async def _execute_query_request(db_id: str, request: QueryRequest):
             columns, rows = agent.execute_query(sqlite_sql)
             response.results = [dict(zip(columns, row)) for row in rows[:request.max_rows]]
             response.row_count = len(rows)
+            if rows:
+                _increment_metric("queries_with_results")
         except Exception as e:
+            _increment_metric("errors_total")
             raise HTTPException(status_code=500, detail=f"SQL 실행 오류: {str(e)}")
+
+    response.duration_ms = int((time.perf_counter() - started_at) * 1000)
+    _record_query_audit(
+        request_id=request_id,
+        db_id=db_id,
+        session_id=request.session_id,
+        mode="sync",
+        dialect=request.dialect,
+        execute=request.execute,
+        ambiguity_detected=response.ambiguity_detected,
+        requires_confirmation=response.requires_confirmation,
+        confidence=response.confidence,
+        row_count=response.row_count,
+        duration_ms=response.duration_ms,
+        question=request.question[:160],
+    )
 
     return response
 

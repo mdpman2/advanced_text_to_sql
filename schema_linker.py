@@ -49,7 +49,7 @@ class SchemaLink:
     table_name: str
     column_name: Optional[str] = None
     confidence: float = 0.0
-    link_type: str = "exact"  # exact, fuzzy, semantic
+    link_type: str = "exact"  # exact, fuzzy, semantic, embedding
 
 
 @dataclass(slots=True)
@@ -69,7 +69,9 @@ class SchemaLinker:
     """
 
     __slots__ = ('schema', 'table_index', 'column_index', 'table_columns',
-                 '_link_cache', '_entity_patterns_frozen', '_table_dict')
+                 '_link_cache', '_entity_patterns_frozen', '_table_dict',
+                 # v3.2.0 — 임베딩 기반 Schema Retriever (선택적 보강)
+                 '_retriever', '_retriever_top_k', '_retriever_min_score')
 
     # 한국어 키워드 매핑 (클래스 레벨 상수) - v3.0 확장
     KOREAN_KEYWORDS: Dict[str, List[str]] = {
@@ -168,7 +170,44 @@ class SchemaLinker:
         self._link_cache: Dict[str, SchemaLinkingResult] = {}  # link() 캐시
         self._entity_patterns_frozen: FrozenSet[Tuple[str, ...]] = frozenset()
         self._table_dict: Dict[str, 'TableSchema'] = {}  # O(1) 테이블 룩업
+        # v3.2.0 — 임베딩 기반 검색기 (선택적)
+        self._retriever = None
+        self._retriever_top_k = 5
+        self._retriever_min_score = 0.25
         self._build_index()
+
+    def attach_retriever(
+        self,
+        retriever: Any,
+        *,
+        top_k: int = 5,
+        min_score: float = 0.25,
+    ) -> bool:
+        """v3.2.0 — 임베딩 기반 Schema Retriever 부착.
+
+        Args:
+            retriever: EmbeddingSchemaRetriever 인스턴스
+            top_k: link() 시 보강할 최대 테이블 수
+            min_score: 코사인 유사도 하한
+        Returns:
+            인덱싱까지 성공하면 True
+        """
+        if retriever is None:
+            self._retriever = None
+            return False
+        ok = False
+        try:
+            ok = retriever.index(self.schema)
+        except Exception:
+            ok = False
+        if ok and getattr(retriever, "is_ready", False):
+            self._retriever = retriever
+            self._retriever_top_k = max(1, int(top_k))
+            self._retriever_min_score = float(min_score)
+            self._link_cache.clear()  # 검색기 부착으로 결과가 달라질 수 있음
+            return True
+        self._retriever = None
+        return False
 
     def _build_index(self) -> None:
         """검색을 위한 인덱스 구축"""
@@ -355,6 +394,35 @@ class SchemaLinker:
         # 테이블 언급 찾기
         table_links = self._find_table_mentions(question, words)
         relevant_tables = {link.table_name for link in table_links}
+
+        # v3.2.0 — 임베딩 검색기로 보강 (키워드 매칭이 부족할 때)
+        # 전체 스키마가 큰데 키워드 매칭 테이블이 소수일 때만 호출하여 비용 최소화
+        total_tables = len(self.schema.tables)
+        if (
+            self._retriever is not None
+            and total_tables > 3
+            and len(relevant_tables) < min(self._retriever_top_k, total_tables)
+        ):
+            try:
+                hits = self._retriever.retrieve(
+                    question,
+                    top_k=self._retriever_top_k,
+                    min_score=self._retriever_min_score,
+                )
+            except Exception:
+                hits = []
+            for hit in hits:
+                if hit.table_name in relevant_tables:
+                    continue
+                if hit.table_name not in self._table_dict:
+                    continue
+                relevant_tables.add(hit.table_name)
+                table_links.append(SchemaLink(
+                    mention=question[:40],
+                    table_name=hit.table_name,
+                    confidence=float(hit.score),
+                    link_type="embedding",
+                ))
 
         # 테이블이 없으면 모든 테이블 고려
         if not relevant_tables:

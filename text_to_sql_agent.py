@@ -1,38 +1,38 @@
-"""Advanced Text-to-SQL Agent (v3.1.4)
-Spider 2.0 벤치마크 #1 TCDataAgent-SQL (95.14%) 참조 기술 기반
+"""Advanced Text-to-SQL Agent (v3.2.0)
+Spider 2.0 벤치마크 2026-04 기준 최신 기술 반영 + Responses API 네이티브 파라미터 풀 활용
 
 핵심 기술:
 1. 스키마 이해 및 메타데이터 관리
 2. 다단계 추론 (Multi-step Reasoning)
 3. 멀티 데이터베이스 지원 (BigQuery, Snowflake, SQLite, PostgreSQL, MySQL, SQL Server)
-4. Self-correction 및 검증 메커니즘 (5-round)
+4. Self-correction 및 검증 메커니즘 (5-round + ReFoRCE 스타일 실행 피드백)
 5. Context-aware SQL 생성 (400K 토큰)
 
 지원 모델: GPT-5.4 (기본 권장), gpt-5.2-codex (SQL 특화) 등 17종
 API: Responses API (2025-04-01-preview) + Structured Outputs (Pydantic v2)
 
-v3.0.0 주요 변경:
-- chat.completions.create() → responses.create() (Responses API 마이그레이션)
-- Pydantic v2 BaseModel 기반 Structured Outputs (additionalProperties 자동 보정)
-- previous_response_id를 활용한 멀티턴 대화 체이닝
-- 신규 방언: MySQL, SQL Server 추가
-- Spider 2.0 벤치마크 2026-03 기준 문서화
+v3.2.0 주요 변경 (2026-04-17):
+- reasoning={"effort": ...} 네이티브 파라미터 사용 (프롬프트 삽입 방식 제거)
+    · 단순 질문: effort=low (기본, 빠름)
+    · 복잡 질문: effort=high (Deep Reasoning)
+    · reasoning.summary=auto 로 CoT 요약 수집
+- text.verbosity=low 로 GPT-5 계열 응답 길이 압축 → 지연/비용 ↓
+- prompt_cache_key + prompt_cache_retention="24h" 로 스키마 컨텍스트 캐시 히트율 향상
+    · DB 단위 안정적 캐시 라우팅 (경로 해시 기반 자동 생성)
+    · 입력 토큰 비용 최대 100%(PTU) / 50%(Standard) 절감
+- reasoning 모델에서 temperature 파라미터 제거 (gpt-5 시리즈 호환성)
+- Self-Correction: 실행 성공 후 빈 결과(0행) 자동 감지 → 조건 완화 재생성 (ReFoRCE 스타일)
+- last_token_usage 프로퍼티로 input/output/cached/reasoning 토큰 관측
 
-v3.0.0 코드 최적화:
-- TextToSQLAgent에 __slots__ 적용 (메모리 최적화)
-- _build_text_config() DRY 헬퍼 추출 (Structured Outputs 텍스트 설정 중복 제거)
-- _JSON_PATTERN 클래스 레벨 프리컴파일 정규식
-- additionalProperties: false 스키마 보정 로직 추가 (Azure Responses API 필수)
-
-v3.1.3 변경:
-- ask_with_history() 빈 SQL 실행 방어 (전체 재시도 실패 시 confidence 0.0 반환)
-
-v3.1.4 변경:
-- API instructions를 additional_context로 전달 가능하도록 ask()/ask_with_history() 확장
-- 세션 기반 API와 문서 메타데이터 버전 정합화
+v3.1.x 이력:
+- v3.1.5: runtime_config.py 중앙화, request_id/duration_ms, telemetry 엔드포인트
+- v3.1.4: ConversationalSQLAgent 연결, additional_context, max_rows 제어
+- v3.1.3: 방언 변환 SQL 실행 분리, ask_with_history 빈 SQL 방어
+- v3.1.0: QueryGuard, AmbiguityDetector, SchemaGraphBuilder 추가
+- v3.0.0: chat.completions → responses.create, Pydantic v2 Structured Outputs
 
 Author: Azure OpenAI Sample
-Date: 2026-03-17
+Date: 2026-04-17
 """
 
 from __future__ import annotations
@@ -98,6 +98,23 @@ class SQLGenerationResult:
     execution_plan: Optional[str] = None
     alternative_queries: List[str] = field(default_factory=list)
     validation_passed: bool = False
+
+
+# v3.2.0: 집계성 쿼리 감지 (COUNT/SUM/AVG/MIN/MAX 등이 SELECT 리스트에 있는지)
+_AGG_SELECT_PATTERN = re.compile(
+    r'select\b[\s\S]*?\b(count|sum|avg|min|max|group_concat|string_agg|listagg|array_agg)\s*\(',
+    re.IGNORECASE,
+)
+
+
+def _is_aggregate_query(sql: str) -> bool:
+    """집계/GROUP BY 쿼리는 0행 결과가 정상일 수 있으므로 빈결과 피드백을 스킵"""
+    if not sql:
+        return False
+    sl = sql.lower()
+    if "group by" in sl:
+        return True
+    return bool(_AGG_SELECT_PATTERN.search(sql))
 
 
 class DestructiveQueryError(Exception):
@@ -454,6 +471,10 @@ class TextToSQLAgent:
         'use_structured_outputs', 'max_context_tokens', '_db_path',
         'client', 'current_schema', 'db_connection',
         'enable_safety_guard', '_guard',
+        # v3.2.0 — Responses API native tuning knobs
+        'default_reasoning_effort', 'deep_reasoning_effort',
+        'verbosity', 'prompt_cache_retention', 'prompt_cache_key',
+        'enable_execution_feedback', '_last_token_usage',
     )
 
     # 컴파일된 정규식 패턴 (성능 최적화)
@@ -477,7 +498,14 @@ class TextToSQLAgent:
         max_context_tokens: int = 400000,
         use_claude: bool = False,
         enable_deep_reasoning: bool = True,
-        enable_safety_guard: bool = True
+        enable_safety_guard: bool = True,
+        # v3.2.0 — Responses API native tuning knobs
+        default_reasoning_effort: Optional[str] = None,
+        deep_reasoning_effort: Optional[str] = None,
+        verbosity: Optional[str] = None,
+        prompt_cache_retention: Optional[str] = None,
+        prompt_cache_key: Optional[str] = None,
+        enable_execution_feedback: Optional[bool] = None,
     ):
         """
         Args:
@@ -490,7 +518,36 @@ class TextToSQLAgent:
             use_claude: Claude 사용 여부
             enable_deep_reasoning: 복잡한 질문에 GPT-5.4 심층 추론 활성화 (기본: True)
             enable_safety_guard: 파괴적 SQL 안전 가드 활성화 여부 (기본: True)
+            default_reasoning_effort: 기본 reasoning effort (none/minimal/low/medium/high/xhigh)
+                                     기본값 RuntimeSettings에서 로드 (보통 "low")
+            deep_reasoning_effort: 복잡 질문용 reasoning effort (기본: "high")
+            verbosity: 응답 상세도 low/medium/high (기본: "low" — SQL에 최적화)
+            prompt_cache_retention: "in-memory"(1h) / "24h" (기본: "24h")
+            prompt_cache_key: 스키마 캐시 라우팅 키 (기본: DB 경로 해시 자동 생성)
+            enable_execution_feedback: Self-Correction 시 실행 결과 샘플 피드백 (기본: True)
         """
+        # RuntimeSettings에서 기본값 로드 (v3.2.0)
+        try:
+            from runtime_config import get_runtime_settings
+            _rs = get_runtime_settings()
+            self.default_reasoning_effort = default_reasoning_effort or _rs.default_reasoning_effort
+            self.deep_reasoning_effort = deep_reasoning_effort or _rs.deep_reasoning_effort
+            self.verbosity = verbosity or _rs.verbosity
+            self.prompt_cache_retention = prompt_cache_retention or _rs.prompt_cache_retention
+            self.enable_execution_feedback = (
+                _rs.enable_execution_feedback if enable_execution_feedback is None
+                else enable_execution_feedback
+            )
+        except Exception:
+            self.default_reasoning_effort = default_reasoning_effort or "low"
+            self.deep_reasoning_effort = deep_reasoning_effort or "high"
+            self.verbosity = verbosity or "low"
+            self.prompt_cache_retention = prompt_cache_retention or "24h"
+            self.enable_execution_feedback = True if enable_execution_feedback is None else enable_execution_feedback
+
+        self.prompt_cache_key = prompt_cache_key  # load_database에서 자동 생성 가능
+        self._last_token_usage: Dict[str, int] = {}
+
         self.use_claude = use_claude
         self.deployment_name = deployment_name
         self.enable_deep_reasoning = enable_deep_reasoning
@@ -520,17 +577,28 @@ class TextToSQLAgent:
         self.db_connection: Optional[sqlite3.Connection] = None
 
         logger.info(
-            f"TextToSQLAgent v3.1 초기화: model={deployment_name}, "
+            f"TextToSQLAgent v3.2.0 초기화: model={deployment_name}, "
             f"api_version={api_version}, structured_outputs={use_structured_outputs}, "
-            f"deep_reasoning={enable_deep_reasoning}, safety_guard={enable_safety_guard}, engine=Responses API"
+            f"deep_reasoning={enable_deep_reasoning}, safety_guard={enable_safety_guard}, "
+            f"reasoning_effort={self.default_reasoning_effort}/{self.deep_reasoning_effort}, "
+            f"verbosity={self.verbosity}, cache_retention={self.prompt_cache_retention}, "
+            f"engine=Responses API"
         )
 
     # ── DRY 헬퍼 (text_config 공통 생성 — _call_llm, _call_llm_with_history에서 재사용) ──
 
+    # v3.2.0: reasoning 전용 모델(=temperature 미사용) 판별 프리픽스
+    _REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+    def _is_reasoning_model(self) -> bool:
+        """현재 배포가 reasoning 모델인지 판별 (temperature 금지 + reasoning.effort 지원)"""
+        name = (self.deployment_name or "").lower()
+        return any(name.startswith(p) for p in self._REASONING_MODEL_PREFIXES)
+
     def _build_text_config(self) -> dict[str, Any]:
-        """Responses API text.format 설정 생성 (DRY 헬퍼)"""
+        """Responses API text.format + verbosity 설정 생성 (DRY 헬퍼, v3.2.0 확장)"""
         if self.use_structured_outputs:
-            return {
+            cfg: dict[str, Any] = {
                 "format": {
                     "type": "json_schema",
                     "name": "sql_generation_result",
@@ -538,7 +606,93 @@ class TextToSQLAgent:
                     "strict": True,
                 }
             }
-        return {"format": {"type": "json_object"}}
+        else:
+            cfg = {"format": {"type": "json_object"}}
+        # v3.2.0 — GPT-5 계열 verbosity: 짧은 응답으로 지연/비용 절감
+        if self.verbosity and self._is_reasoning_model():
+            cfg["verbosity"] = self.verbosity
+        return cfg
+
+    def _build_request_params(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        use_deep_reasoning: bool = False,
+        previous_response_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Responses API 요청 파라미터 조립 (v3.2.0 DRY 헬퍼)
+
+        - reasoning.effort 네이티브 파라미터 적용 (프롬프트 삽입 방식 제거)
+        - prompt_cache_key/retention 적용으로 캐시 히트율 향상
+        - reasoning 모델에서는 temperature 제거 (오류 방지)
+        """
+        params: dict[str, Any] = {
+            "model": self.deployment_name,
+            "instructions": system_prompt,
+            "input": user_prompt,
+            "max_output_tokens": 32768,
+            "text": self._build_text_config(),
+        }
+
+        if self._is_reasoning_model():
+            # GPT-5 계열: reasoning.effort 네이티브 파라미터
+            effort = (
+                self.deep_reasoning_effort
+                if (use_deep_reasoning and self.enable_deep_reasoning)
+                else self.default_reasoning_effort
+            )
+            reasoning_cfg: dict[str, Any] = {"effort": effort}
+            # reasoning summary는 일부 모델에서만 지원 — 지원 안하면 서버가 무시
+            if effort not in {"none", "minimal"}:
+                reasoning_cfg["summary"] = "auto"
+            params["reasoning"] = reasoning_cfg
+        else:
+            # 비-reasoning 모델: temperature 사용
+            params["temperature"] = 0.1
+
+        # v3.2.0 — Prompt caching 최적화 (동일 스키마 반복 호출 시 캐시 히트 ↑)
+        if self.prompt_cache_key:
+            params["prompt_cache_key"] = self.prompt_cache_key
+            if self.prompt_cache_retention:
+                params["prompt_cache_retention"] = self.prompt_cache_retention
+
+        if previous_response_id:
+            params["previous_response_id"] = previous_response_id
+
+        return params
+
+    def _record_usage(self, response: Any) -> None:
+        """Response 사용량을 마지막 토큰 사용량으로 기록 (관측성)"""
+        try:
+            usage = getattr(response, "usage", None)
+            if not usage:
+                return
+            input_tokens = getattr(usage, "input_tokens", 0) or 0
+            output_tokens = getattr(usage, "output_tokens", 0) or 0
+            total_tokens = getattr(usage, "total_tokens", input_tokens + output_tokens)
+            cached_tokens = 0
+            reasoning_tokens = 0
+            details_in = getattr(usage, "input_tokens_details", None)
+            if details_in is not None:
+                cached_tokens = getattr(details_in, "cached_tokens", 0) or 0
+            details_out = getattr(usage, "output_tokens_details", None)
+            if details_out is not None:
+                reasoning_tokens = getattr(details_out, "reasoning_tokens", 0) or 0
+            self._last_token_usage = {
+                "input_tokens": int(input_tokens),
+                "output_tokens": int(output_tokens),
+                "total_tokens": int(total_tokens),
+                "cached_tokens": int(cached_tokens),
+                "reasoning_tokens": int(reasoning_tokens),
+            }
+        except Exception:  # 관측 실패는 무시 (요청 자체는 성공)
+            pass
+
+    @property
+    def last_token_usage(self) -> Dict[str, int]:
+        """마지막 LLM 호출의 토큰 사용량 (input/output/cached/reasoning)"""
+        return dict(self._last_token_usage)
 
     def __enter__(self) -> "TextToSQLAgent":
         """컨텍스트 매니저 진입"""
@@ -556,7 +710,15 @@ class TextToSQLAgent:
         self._db_path = db_path
         self.current_schema = SchemaExtractor.extract_sqlite_schema(db_path)
         self.db_connection = sqlite3.connect(db_path)
-        logger.info(f"데이터베이스 로드 완료: {db_path} (테이블 {len(self.current_schema.tables)}개)")
+        # v3.2.0: DB 단위 prompt_cache_key 자동 생성 (사용자 지정값 우선)
+        if not self.prompt_cache_key:
+            import hashlib
+            digest = hashlib.sha256(os.path.abspath(db_path).encode("utf-8")).hexdigest()[:16]
+            self.prompt_cache_key = f"text2sql:{os.path.basename(db_path)}:{digest}"
+        logger.info(
+            f"데이터베이스 로드 완료: {db_path} (테이블 {len(self.current_schema.tables)}개, "
+            f"cache_key={self.prompt_cache_key})"
+        )
 
     def _call_llm(
         self,
@@ -565,43 +727,26 @@ class TextToSQLAgent:
         use_deep_reasoning: bool = False
     ) -> str:
         """
-        LLM 호출 — Responses API (v3.0)
+        LLM 호출 — Responses API (v3.2.0: reasoning.effort 네이티브 파라미터)
 
-        v3.0 변경사항:
-        - chat.completions.create() → responses.create()
-        - messages → instructions + input
-        - response_format → text.format
-        - response.choices[0].message.content → response.output_text
-        - max_completion_tokens/max_tokens → max_output_tokens (통일)
+        v3.2.0 변경사항:
+        - reasoning={"effort": ...} 네이티브 파라미터로 심층 추론 (프롬프트 삽입 제거)
+        - prompt_cache_key/retention 적용으로 입력 토큰 비용 절감
+        - reasoning 모델에서는 temperature 제거 (오류 방지)
+        - text.verbosity 로 출력 길이 제어 → 지연 단축
 
         Args:
             system_prompt: 시스템 지시사항 (instructions)
             user_prompt: 사용자 입력 (input)
-            use_deep_reasoning: 복잡한 질문에 심층 추론 활성화 여부
+            use_deep_reasoning: 복잡한 질문에 심층 추론(effort=high) 활성화 여부
         """
-        model = self.deployment_name
-
-        # 복잡한 질문에 대해 심층 추론 프롬프트 추가
-        if use_deep_reasoning and self.enable_deep_reasoning:
-            system_prompt = system_prompt + """
-
-## 심층 추론 모드 (Deep Reasoning):
-복잡한 질문입니다. 다음 단계를 따라 신중하게 분석하세요:
-1. 질문의 핵심 의도를 파악합니다.
-2. 필요한 테이블과 컬럼을 식별합니다.
-3. 조인 관계와 조건을 명확히 합니다.
-4. 집계 함수나 서브쿼리 필요 여부를 판단합니다.
-5. 최종 SQL을 검증합니다."""
-
-        # Responses API 호출 (v3.0 — instructions + input 패턴)
-        response = self.client.responses.create(
-            model=model,
-            instructions=system_prompt,
-            input=user_prompt,
-            temperature=0.1,
-            max_output_tokens=32768,
-            text=self._build_text_config(),
+        params = self._build_request_params(
+            system_prompt,
+            user_prompt,
+            use_deep_reasoning=use_deep_reasoning,
         )
+        response = self.client.responses.create(**params)
+        self._record_usage(response)
         return response.output_text or ""
 
     # 복잡한 질문 판단용 키워드 (클래스 레벨 상수)
@@ -719,9 +864,24 @@ class TextToSQLAgent:
                         validation_passed = True  # 파괴적 SQL은 실행 없이 검증 통과
                         logger.info(f"파괴적 SQL 감지 — 실행 검증 스킵: {sql[:50]}...")
                     else:
-                        is_valid, _, error_msg = SQLValidator.execute_and_validate(sql, self.db_connection)
+                        is_valid, rows, error_msg = SQLValidator.execute_and_validate(sql, self.db_connection)
                         if not is_valid:
                             last_error = f"실행 오류: {error_msg}"
+                            continue
+                        # v3.2.0: 빈 결과 자체 피드백 (ReFoRCE 스타일)
+                        # 집계 쿼리(COUNT/SUM/AVG 등)는 0행 정상 → 스킵
+                        if (
+                            self.enable_execution_feedback
+                            and attempt < max_retries - 1
+                            and rows is not None
+                            and len(rows) == 0
+                            and not _is_aggregate_query(sql)
+                        ):
+                            last_error = (
+                                "실행은 성공했지만 결과가 0행입니다. "
+                                "WHERE 조건이나 JOIN 조건이 너무 엄격하지 않은지 재검토하고, "
+                                "필요하면 조건을 완화한 대안 SQL을 생성해주세요."
+                            )
                             continue
                         validation_passed = True
 
@@ -849,24 +1009,21 @@ class ConversationalSQLAgent(TextToSQLAgent):
         user_prompt: str,
     ) -> str:
         """
-        Responses API previous_response_id를 활용한 멀티턴 LLM 호출 (v3.0)
+        Responses API previous_response_id를 활용한 멀티턴 LLM 호출 (v3.2.0)
 
-        이전 응답 ID를 자동으로 체이닝하여 대화 컨텍스트를 유지합니다.
+        이전 응답 ID를 자동으로 체이닝하여 대화 컨텍스트를 유지하고,
+        reasoning.effort / prompt_cache_key / verbosity 네이티브 파라미터를 적용합니다.
         """
-        params: dict[str, Any] = {
-            "model": self.deployment_name,
-            "instructions": system_prompt,
-            "input": user_prompt,
-            "temperature": 0.1,
-            "max_output_tokens": 32768,
-            "text": self._build_text_config(),
-        }
-
-        # v3.0: previous_response_id로 대화 체이닝
-        if self._last_response_id:
-            params["previous_response_id"] = self._last_response_id
+        # 멀티턴 대화는 맥락이 누적되므로 기본적으로 심층 추론 활성화
+        params = self._build_request_params(
+            system_prompt,
+            user_prompt,
+            use_deep_reasoning=True,
+            previous_response_id=self._last_response_id,
+        )
 
         response = self.client.responses.create(**params)
+        self._record_usage(response)
         self._last_response_id = response.id  # 다음 턴을 위해 ID 저장
         return response.output_text or ""
 

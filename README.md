@@ -1,6 +1,99 @@
-# Advanced Text-to-SQL Agent v3.1.4 (2026-03 Refresh)
+# Advanced Text-to-SQL Agent v3.2.0 (2026-04 Refresh)
 
-Spider 2.0 벤치마크 최신 기술 + GPT-5.4 기본값 + **Responses API** + Pydantic v2 Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
+Spider 2.0 벤치마크 2026-04 기준 최신 기술 + GPT-5.4 Responses API 네이티브 파라미터 풀 활용 + Pydantic v2 Structured Outputs를 적용한 고성능 Text-to-SQL 솔루션입니다.
+
+## 🆕 v3.2.0 주요 업데이트 (2026-04-17)
+
+### Responses API 네이티브 파라미터 풀 활용 (Microsoft Learn 2026-04 기준)
+
+| 항목 | v3.1.5 | **v3.2.0** | 효과 |
+|------|--------|-----------|------|
+| **심층 추론 제어** | system prompt에 "심층 추론 모드" 문자열 삽입 | **✅ `reasoning={"effort": "low"/"high", "summary": "auto"}`** 네이티브 | 실제 reasoning token 할당, 단순 질문은 effort=low로 응답속도↑ |
+| **응답 길이 제어** | 없음 (max_output_tokens만) | **✅ `text.verbosity="low"`** | GPT-5 계열 응답 압축 → 지연/비용 ↓ |
+| **Prompt Caching** | 미사용 (캐시 miss 빈번) | **✅ `prompt_cache_key` (DB 단위 해시)** + `prompt_cache_retention="24h"` | 입력 토큰 비용 최대 **100%(PTU) / 50%(Standard)** 절감, 유지시간 1h→24h |
+| **reasoning 모델 temperature** | `temperature=0.1` 항상 전달 (gpt-5 계열 오류 위험) | **✅ reasoning 모델 자동 감지 후 제거** | GPT-5/o-series 호환성 확보 |
+| **Self-Correction 피드백** | 오류 메시지만 전달 | **✅ 실행 성공 후 0행 결과 자동 감지 → 조건 완화 재생성** (ReFoRCE 스타일) | "실행은 되는데 빈 결과" 케이스 자동 복구 |
+| **토큰 관측성** | 없음 | **✅ `last_token_usage` + API 응답 `token_usage`** (input/output/cached/reasoning) | 캐시 히트율·reasoning 비중 실측 가능 |
+| **임베딩 Schema Retriever** | 키워드 + 퍼지 매칭만 | **✅ `EmbeddingSchemaRetriever` (text-embedding-3-small, 코사인 유사도)** | 대규모 스키마(수십~수백 테이블)에서 의미 기반 테이블 선정, 질문 임베딩 FIFO 캐시(200개) + SHA256 스키마 지문 기반 재인덱싱 억제 |
+| **Spider 2.0 1위** | TCDataAgent-SQL 95.14% (오래됨) | **✅ Genloop Sentinel Agent v2 Pro 96.70%** (2026-04 공식 리더보드) | 벤치마크 최신화 |
+
+### Spider 2.0-Snow 리더보드 (2026-04, spider2-sql.github.io 기준)
+
+| 순위 | 방법 | 점수 |
+|------|------|------|
+| 1 | Genloop's Sentinel Agent v2 Pro | **96.70** |
+| 2 | Native mini (usenative.ai) | 96.53 |
+| 3 | QUVI-3 + Gemini-3-pro-preview (DAQUV) | 94.15 |
+| 4 | TCDataAgent-SQL + Contextual Scaling Engine (Tencent) | 93.97 |
+| 5 | Prism Swarm with Deepthink + Claude-Sonnet-4.5 (Paytm) | 90.49 |
+
+### v3.2.0 환경변수 (선택적)
+
+```bash
+# Responses API 네이티브 파라미터 튜닝 (기본값 그대로 사용 권장)
+TEXT2SQL_REASONING_EFFORT=low          # 기본 effort (none/minimal/low/medium/high/xhigh)
+TEXT2SQL_DEEP_REASONING_EFFORT=high    # 복잡 질문용 effort
+TEXT2SQL_VERBOSITY=low                 # 응답 길이 (low/medium/high)
+TEXT2SQL_PROMPT_CACHE_RETENTION=24h    # in-memory(1h) / 24h
+TEXT2SQL_ENABLE_EXECUTION_FEEDBACK=1   # Self-Correction 빈 결과 자동 재생성
+
+# 임베딩 기반 Schema Retriever (기본 비활성 — 대규모 스키마에서만 활성화)
+TEXT2SQL_ENABLE_EMBEDDING_RETRIEVAL=0  # 1=활성 (API 서버 기동 시 자동 index)
+TEXT2SQL_EMBEDDING_DEPLOYMENT=text-embedding-3-small
+TEXT2SQL_EMBEDDING_TOP_K=5             # 임베딩 보강 최대 테이블 수
+TEXT2SQL_EMBEDDING_MIN_SCORE=0.25      # 코사인 유사도 최소 임계값
+```
+
+### 임베딩 Schema Retriever 사용 예시
+
+```python
+from text_to_sql_agent import SchemaExtractor
+from schema_linker import SchemaLinker
+from schema_retriever import EmbeddingSchemaRetriever
+
+schema = SchemaExtractor.extract_sqlite_schema("large_warehouse.db")
+linker = SchemaLinker(schema)
+
+retriever = EmbeddingSchemaRetriever(deployment_name="text-embedding-3-small")
+linker.attach_retriever(retriever, top_k=5, min_score=0.25)
+# → 내부에서 테이블을 "Table: X | Columns: ... | PK/FK" 로 직렬화 후 1회 배치 임베딩
+# → 동일 스키마 재접속 시 SHA256 지문으로 재인덱싱 스킵
+
+result = linker.link("작년 4분기 북미 지역 적자 라인업은?")
+# 키워드/퍼지 매칭이 top_k 미만일 때만 임베딩 보강 (link_type="embedding")
+```
+
+### v3.2.0 코드 사용 예시
+
+```python
+from text_to_sql_agent import TextToSQLAgent
+
+agent = TextToSQLAgent(
+    deployment_name="gpt-5.4",
+    default_reasoning_effort="low",    # 단순 질문: 빠른 응답
+    deep_reasoning_effort="high",      # 복잡 질문: 자동 상승
+    verbosity="low",                   # SQL만 간결히
+    prompt_cache_retention="24h",      # 스키마 캐시 24시간 유지
+)
+agent.load_database("sample_company.db")  # prompt_cache_key 자동 생성
+
+result = agent.ask("부서별 평균 연봉은?")
+print(result["sql"])
+print("토큰 사용량:", agent.last_token_usage)
+# {'input_tokens': 2341, 'output_tokens': 180, 'cached_tokens': 2048,
+#  'reasoning_tokens': 320, 'total_tokens': 2521}
+```
+
+---
+
+## 🆕 v3.1.5 주요 업데이트 (2026-03-31)
+
+| 항목 | v3.1.4 | **v3.1.5** | 효과 |
+|------|--------|-----------|------|
+| **런타임 설정** | 개별 파일에서 env 직접 조회 | **✅ `runtime_config.py` 중앙화** | 배포명/API 버전/TTL/CORS 일관성 확보 |
+| **요청 추적** | 별도 식별자 없음 | **✅ `request_id` / `duration_ms` 추가** | 운영 분석 및 장애 추적 용이 |
+| **감사 로그** | 없음 | **✅ in-memory query audit log** | 최근 요청 이력 확인 가능 |
+| **운영 메트릭** | health 중심 | **✅ `/telemetry/summary`, `/telemetry/queries`** | 관측성 향상 |
 
 ## 🆕 v3.1.4 주요 업데이트 (2026-03-17)
 
@@ -41,7 +134,7 @@ Spider 2.0 벤치마크 최신 기술 + GPT-5.4 기본값 + **Responses API** + 
 | **SQL 방언** | 4종 (SQLite, PG, BQ, Snowflake) | **6종 (+MySQL, SQL Server)** | 엔터프라이즈 DB 지원 |
 | **최적화 규칙** | 9개 (중복 2개 포함) | **11개 (중복 제거, 신규 2개)** | Cartesian Join + Window Function |
 | **모델** | 17종 | **17종 (GPT-5.4 기본값 추가, GPT-5.2 호환 유지)** | GPT-5.4 기본, GPT-5.2 계열 호환 |
-| **Spider 2.0** | TCDataAgent-SQL 93.97% | **TCDataAgent-SQL 95.14%** | 2026-03 기준 리더보드 반영 |
+| **Spider 2.0** | TCDataAgent-SQL 95.14% (추정치) | **Genloop Sentinel Agent v2 Pro 96.70%** (공식) | 2026-04 리더보드 실측 반영 |
 | **API 버전** | `v1` (가상) | **`2025-04-01-preview`** | 실제 Azure API 버전 |
 | **한국어 키워드** | 50+ | **55+** | 사이, 비어있는, 최근, 분기별 등 |
 
@@ -452,7 +545,7 @@ advanced_text_to_sql/
 ├── ambiguity_detector.py  # 모호 질문 감지 v3.1.1 (후속 질문 생성)
 ├── schema_graph.py        # 스키마 그래프 v3.1.0 (nodes/edges, Mermaid ER)
 ├── demo_app.py            # 데모 애플리케이션 v3.1.4 (GPT-5.4 기본값, dispatch dict, 최신 배너/설명)
-├── test_all.py            # 종합 테스트 v3.1.4 (17 시나리오, 193 항목 검증)
+├── test_all.py            # 종합 테스트 v3.2.0 (20 시나리오, 285 항목 검증)
 ├── requirements.txt       # 의존성 (openai>=1.93, fastapi>=0.115, uvicorn>=0.34)
 ├── sample_company.db      # 샘플 데이터베이스 (테스트 시 자동 생성/갱신)
 └── README.md              # 문서 (v3.1.4)
@@ -589,17 +682,20 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 # Claude:  claude-opus-4-5, claude-sonnet-4-5
 ```
 
-## 📊 Spider 2.0 벤치마크 참고 지표
+## 📊 Spider 2.0-Snow 벤치마크 (2026-04, spider2-sql.github.io 공식 리더보드)
 
-| 순위 | 솔루션 | 점수 | 날짜 |
-|------|--------|------|------|
-| 1 | **TCDataAgent-SQL** (Tencent) | **95.14%** | 2026-05-18 |
-| 2 | Native mini v2 (usenative.ai) | 93.88% | 2026-04-12 |
-| 3 | Prism Swarm + Claude-Sonnet-4.5 (Paytm) | 91.23% | 2026-03-27 |
-| 4 | Ask Data + RKG (AT&T & RelationalAI) | 88.52% | 2026-02-15 |
-| 5 | ByteBrain-Agent v2 (ByteDance) | 86.74% | 2026-01-28 |
+| 순위 | 솔루션 | 점수 |
+|------|--------|------|
+| 1 | **Genloop Sentinel Agent v2 Pro** (Genloop) | **96.70** |
+| 2 | Native mini (usenative.ai) | 96.53 |
+| 3 | QUVI-3 + Gemini-3-pro-preview (DAQUV) | 94.15 |
+| 4 | TCDataAgent-SQL + Contextual Scaling Engine (Tencent) | 93.97 |
+| 5 | Prism Swarm with Deepthink + Claude-Sonnet-4.5 (Paytm) | 90.49 |
+| 6 | Genloop Sentinel Agent v2 (Genloop) | 88.48 |
+| 7 | QUVI-3 + Claude-Opus-4.6 (DAQUV) | 86.28 |
+| 8 | Ask Data + Relational Knowledge Graph (AT&T & RelationalAI) | 86.28 |
 
-## 🧪 테스트 커버리지 (193 항목)
+## 🧪 테스트 커버리지 (285 항목, 20 시나리오)
 
 | 시나리오 | 테스트 항목 | 항목 수 |
 |---------|-------------|---------|
@@ -620,13 +716,16 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 | **15. v3.1.2 수정** | **schema_linker 임계값, sql_optimizer 패턴, 스키마 캐시 무결성** | **12** |
 | **16. v3.1.3 최적화** | **sqlite_sql/response_sql 분리, 빈 SQL 방어, 스트리밍 dialect, MCP dialect** | **9** |
 | **17. v3.1.4 API 운영 기능** | **세션 TTL 정리, /query/sync, 세션 종료, health 메타데이터 확장** | **18** |
-| | **합계** | **193** |
+| **18. v3.1.5 런타임/관측** | **RuntimeSettings 중앙화, request_id/duration_ms, 감사 로그, /telemetry/** | **25** |
+| **19. v3.2.0 Responses API 네이티브** | **reasoning.effort, verbosity, prompt_cache_key, 실행결과 피드백, token_usage** | **36** |
+| **20. v3.2.0 임베딩 Schema Retriever** | **EmbeddingSchemaRetriever, 코사인 유사도, 스키마 지문, SchemaLinker 통합** | **31** |
+| | **합계** | **285** |
 
 ## 🆚 경쟁 솔루션 비교
 
 | 기능 | 본 솔루션 | QueryWeaver | 일반 LLM | 기존 NL2SQL |
 |------|----------|-------------|---------|-------------|
-| Spider 2.0 정확도 | **95.14%** | N/A | ~45% | ~50% |
+| Spider 2.0-Snow 참조 점수 | Genloop 96.70 / TCDataAgent 93.97 수준 기술 적용 | N/A | ~10.1% (GPT-4o) / ~17.1% (o1-preview) | ~10% |
 | REST API | ✅ FastAPI | ✅ FastAPI | ❌ | ❌ |
 | MCP Server | ✅ v3.1 | ✅ | ❌ | ❌ |
 | SSE Streaming | ✅ v3.1 | ✅ | ❌ | ❌ |
@@ -647,6 +746,8 @@ agent = TextToSQLAgent(deployment_name="gpt-5.2-codex")
 
 | 날짜 | 버전 | 변경 내용 |
 |------|------|----------|
+| 2026-04-17 | **3.2.0** | **Responses API 네이티브 파라미터 (reasoning.effort / verbosity / prompt_cache_key / prompt_cache_retention) 풀 활용, reasoning 모델 temperature 자동 제거, ReFoRCE 스타일 Self-Correction 실행결과 피드백 (빈 결과 자동 복구), `last_token_usage` + API `token_usage` (input/output/cached/reasoning) 텔레메트리, 임베딩 기반 Schema Retriever (text-embedding-3-small + 코사인 유사도 + SHA256 스키마 지문 + 질문 FIFO 캐시 200개), Spider 2.0-Snow 리더보드 2026-04 최신화 (Genloop Sentinel Agent v2 Pro 96.70 1위), 테스트 시나리오 19·20 추가, 285항목 검증** |
+| 2026-03-31 | **3.1.5** | **runtime_config.py 중앙화, request_id/duration_ms 추적, in-memory 감사 로그, /telemetry/summary·/telemetry/queries 엔드포인트, 테스트 시나리오 18 추가** |
 | 2026-03-17 | **3.1.4** | **세션 TTL 정리, /databases/{db_id}/query/sync 추가, DELETE /sessions/{db_id}/{session_id} 추가, README/MCP/테스트 버전 정합화, 테스트 시나리오 17 추가, 최신 전체 실행 193항목 검증** |
 | 2026-03-16 | **3.1.3** | **api_server 방언 변환 SQL 실행 분리 (sqlite_sql/response_sql), ask_with_history 빈 SQL 실행 방어, MCP dialect 파라미터 실제 적용, 스트리밍 방언 변환 지원, 테스트 시나리오 16 추가** |
 | 2026-03-15 | 3.1.2 | schema_linker 퍼지 매칭 임계값 조정, sql_optimizer Self-Correction 패턴 보정, text_to_sql_agent 스키마 캐시 무결성 강화, 테스트 시나리오 15 추가 |
